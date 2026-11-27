@@ -112,7 +112,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "creator_code_test",
-            "Run a built Code Game headlessly for a bounded number of fixed ticks with a seeded world and return telemetry (status, outcome, tick, entities, HUD). The test source is explicit and mutually exclusive: pass `cityId` + `cityRevision` (both together) to run against the desktop host's frozen snapshot for exactly that City revision, or omit both to run the clearly-marked synthetic fixture. The response records which source actually ran; an unavailable or stale City is a structured non-executable error, never a silent fallback to the synthetic world. This is the automated feedback loop; it does not replace the visual City acceptance. Requires `--allow-local-writes`.",
+            "Run a built Code Game headlessly for a bounded number of fixed ticks with a seeded world and return telemetry (status, outcome, tick, entities, HUD). The test source is explicit and mutually exclusive: pass `cityId` + `cityRevision` (both together) to run against the desktop host's frozen snapshot for exactly that City revision, or omit both to run the clearly-marked synthetic fixture. The response records which source actually ran; an unavailable or stale City is a structured non-executable error, never a silent fallback to the synthetic world. Optional `scenario` is inline JSON (at most 8192 bytes) with 1..8 closed-vocabulary assertions (outcome / entityCountAtLeast / entityCountAtMost / hudFlag / counterAtLeast / counterEquals / finishedWithinTicks); the response then carries executionOk plus a verdict (passed/failed/inconclusive) so a completed run is never conflated with a passing game. This is the automated feedback loop; it does not replace the visual City acceptance. Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
@@ -120,8 +120,15 @@ pub fn specs() -> Vec<ToolSpec> {
                 "ticks":{"type":"integer","minimum":1,"maximum":3600},
                 "cityId":{"type":"string","minLength":1,"maxLength":128},
                 "cityRevision":{"type":"integer","minimum":0},
+                "scenario":{"type":"string","minLength":1,"maxLength":8192},
             }),
             &["workspaceId", "buildId"],
+        ),
+        spec(
+            "creator_code_test_record",
+            "Read one headless Code Game test record by its 64-hex content buildId: executionOk, verdict (passed/failed/inconclusive), verdictReason, scenarioId, per-assertion results, worldSnapshotDigest, seed/ticks and the test source identity. Read-only status projection keyed by buildId; never returns a filesystem path; not_found means no headless test has run for that build in this data home.",
+            json!({"buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"}}),
+            &["buildId"],
         ),
     ]
 }
@@ -130,6 +137,7 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
     match name {
         "creator_code_workspace_info" => workspace_info(args, data_home),
         "creator_code_file_read" => file_read(args, data_home),
+        "creator_code_test_record" => code_test_record(args, data_home),
         "creator_code_project_create" => {
             require_writes(allow_local_writes, "Creating a Code Game workspace")?;
             project_create(args, data_home)
@@ -703,6 +711,10 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     if ticks == 0 || ticks > MAX_TICKS {
         return Err(ToolError::new("invalid_argument", format!("`ticks` must be from 1 to {MAX_TICKS}")));
     }
+    // 场景（PR06）：inline JSON 透传给 runner，MCP 只做小形状检查（长度上限 +
+    // closed kind 词表），深度逐字段校验留在 runner。无效场景是 invalid_argument，
+    // 绝不带病运行再静默忽略。
+    let scenario = code_test_scenario(args)?;
     // 测试源显式化（PR05）：cityId+cityRevision 成对给出 → 宿主冻结的 City 快照；
     // 都不给 → 合成 fixture。解析失败是结构化非可执行诊断，绝不静默回退合成世界。
     let city_snapshot = code_test_city_source(args, data_home)?;
@@ -720,6 +732,10 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         "--ticks".to_string(),
         ticks.to_string(),
     ];
+    if let Some(request) = &scenario {
+        runner_args.push("--scenario".to_string());
+        runner_args.push(request.raw.clone());
+    }
     if let Some(snapshot) = &city_snapshot {
         // City 路径：runner 侧 validateCityWorldSnapshot + header.snapshotDigest
         // 对照是真正的密码学校验执行点；这里只负责把有界暂存的快照与 digest 交给它。
@@ -736,10 +752,12 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     )?;
     // 与脚本自身的 `game_execution_timeout`（previewGame 的墙钟 deadline）同码：
     // 无头运行有界是 creator_code_test 既有响应形态的一部分——失败按 ToolError
-    // 映射稳定错误码，绝不静默成功，也绝不挂死工具调用。
+    // 映射稳定错误码，绝不静默成功，也绝不挂死工具调用。PR06：失败路径同时落一条
+    // executionOk=false + verdict=failed 的门记录（执行失败永远不等于测试通过）。
     if output.timed_out {
         let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
-        write_test_record(data_home, &build_id, &revision, false, seed, ticks, &source)?;
+        let verdict = code_test_failure_verdict(scenario.as_ref(), "runner_timeout");
+        write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict })?;
         return Err(ToolError::new(
             "game_execution_timeout",
             format!(
@@ -753,7 +771,8 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         // runner 跑了但没有可解析结果：同样是一条 ok:false 的门记录，再结构化报错。
         Err(_) => {
             let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
-            write_test_record(data_home, &build_id, &revision, false, seed, ticks, &source)?;
+            let verdict = code_test_failure_verdict(scenario.as_ref(), "runner_output_invalid");
+            write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict })?;
             return Err(ToolError::new("data_unavailable", "The headless runner returned no JSON result."));
         }
     };
@@ -772,20 +791,212 @@ fn code_test(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         };
         let message = parsed.get("error").and_then(|error| error.get("message")).and_then(Value::as_str).unwrap_or("The headless run failed.");
         let source = code_test_source_record(city_snapshot.as_ref(), &Value::Null);
-        write_test_record(data_home, &build_id, &revision, false, seed, ticks, &source)?;
+        let verdict = code_test_failure_verdict(scenario.as_ref(), "runner_failed");
+        write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: false, source: &source, verdict: &verdict })?;
         return Err(ToolError::new(code, message.to_string()));
     }
     let telemetry = parsed.get("telemetry").cloned().unwrap_or(Value::Null);
     let source = code_test_source_record(city_snapshot.as_ref(), &telemetry);
-    write_test_record(data_home, &build_id, &revision, true, seed, ticks, &source)?;
-    Ok(json!({"ok":true,"data":{
-        "workspaceId": workspace_id,
-        "gameId": meta.game_id,
-        "buildId": build_id,
-        "gameRevision": revision,
-        "source": source,
-        "telemetry": telemetry,
-    }}))
+    let verdict = code_test_success_verdict(scenario.as_ref(), parsed.get("scenario"), city_snapshot.as_ref(), &telemetry);
+    write_test_record(data_home, &build_id, &revision, seed, ticks, &CodeTestOutcome { ok: true, source: &source, verdict: &verdict })?;
+    // PR06：data 增加 executionOk/verdict/scenarioId?/assertions?/worldSnapshotDigest?
+    // （verdict 恒存在：无场景 → inconclusive + verdictReason=no_scenario，消费方
+    // 无需处理缺失分支）。
+    let mut data = serde_json::Map::new();
+    data.insert("workspaceId".into(), json!(workspace_id));
+    data.insert("gameId".into(), json!(meta.game_id));
+    data.insert("buildId".into(), json!(build_id));
+    data.insert("gameRevision".into(), json!(revision));
+    data.insert("source".into(), source);
+    data.insert("telemetry".into(), telemetry);
+    if let Some(extras) = verdict.as_object() {
+        for (key, value) in extras {
+            data.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(json!({"ok":true,"data":data}))
+}
+
+// ── Scenario / Verdict（PR06）───────────────────────────────────────
+
+/// 一次 code_test 的执行结论：runner 是否跑完（executionOk 同源）、来源声明
+/// 与裁决块（executionOk/verdict/verdictReason/scenarioId?/assertions?/
+/// worldSnapshotDigest?）。响应与门记录共用同一形状。
+struct CodeTestOutcome<'a> {
+    ok: bool,
+    source: &'a Value,
+    verdict: &'a Value,
+}
+
+/// MCP 侧最大场景 JSON 与 runner（MAX_SCENARIO_JSON=8192）对齐。
+const MAX_SCENARIO_JSON: usize = 8_192;
+/// closed 断言词表（与 SDK `GAME_TEST_ASSERTION_KINDS_V1` 同表；深度校验在 runner）。
+const SCENARIO_ASSERTION_KINDS: [&str; 7] = [
+    "outcome",
+    "entityCountAtLeast",
+    "entityCountAtMost",
+    "hudFlag",
+    "counterAtLeast",
+    "counterEquals",
+    "finishedWithinTicks",
+];
+
+/// 一次 code_test 请求携带的场景：原始 inline JSON（透传）+ 已复核的 scenarioId。
+#[derive(Debug)]
+struct CodeTestScenario {
+    raw: String,
+    scenario_id: String,
+}
+
+/// 小形状检查：≤8 KiB inline JSON、schemaVersion 1、scenarioId ≤128、断言
+/// 1..8 且每条有 ≤64 的 id 与 closed kind。字段级 cap/counter 词表由 runner
+/// 的 validateGameTestScenarioV1 负责并返回逐字段诊断。
+fn code_test_scenario(args: &Value) -> Result<Option<CodeTestScenario>, ToolError> {
+    let Some(raw) = args.get("scenario").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if raw.is_empty() || raw.len() > MAX_SCENARIO_JSON {
+        return Err(ToolError::new(
+            "invalid_argument",
+            format!("`scenario` must be inline JSON of at most {MAX_SCENARIO_JSON} bytes"),
+        ));
+    }
+    let parsed: Value = serde_json::from_str(raw)
+        .map_err(|_| ToolError::new("invalid_argument", "`scenario` is not valid JSON."))?;
+    if parsed.get("schemaVersion").and_then(Value::as_u64) != Some(1) {
+        return Err(ToolError::new("invalid_argument", "`scenario` schemaVersion must be 1."));
+    }
+    let scenario_id = parsed
+        .get("scenarioId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .ok_or_else(|| ToolError::new("invalid_argument", "`scenario.scenarioId` must be 1..128 characters."))?;
+    let assertions = parsed
+        .get("assertions")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty() && items.len() <= 8)
+        .ok_or_else(|| ToolError::new("invalid_argument", "`scenario.assertions` must be an array of 1..8 assertions."))?;
+    for assertion in assertions {
+        assertion
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty() && value.len() <= 64)
+            .ok_or_else(|| ToolError::new("invalid_argument", "each `scenario.assertions[]` needs an id of 1..64 characters."))?;
+        assertion
+            .get("kind")
+            .and_then(Value::as_str)
+            .filter(|kind| SCENARIO_ASSERTION_KINDS.contains(kind))
+            .ok_or_else(|| ToolError::new(
+                "invalid_argument",
+                format!("each `scenario.assertions[].kind` must be one of: {}", SCENARIO_ASSERTION_KINDS.join(", ")),
+            ))?;
+    }
+    Ok(Some(CodeTestScenario { raw: raw.to_string(), scenario_id: scenario_id.to_owned() }))
+}
+
+/// 失败路径（runner 超时 / 输出不可解析 / runner 报错）的裁决块：执行失败
+/// 永远 verdict=failed，绝不 inconclusive、更不可能 passed。
+fn code_test_failure_verdict(scenario: Option<&CodeTestScenario>, reason: &str) -> Value {
+    let mut extras = serde_json::Map::new();
+    extras.insert("executionOk".into(), json!(false));
+    extras.insert("verdict".into(), json!("failed"));
+    extras.insert("verdictReason".into(), json!(reason));
+    if let Some(request) = scenario {
+        extras.insert("scenarioId".into(), json!(request.scenario_id));
+    }
+    Value::Object(extras)
+}
+
+/// 成功路径裁决（与 SDK `evaluateGameTestScenarioV1` 的决策表同源，这里是
+/// MCP 对 runner 输出的采信 + 自洽复核）：
+/// - 未请求场景 → `inconclusive` + `no_scenario`（显式值，消费方无需处理缺失）；
+/// - 请求了场景但 runner 没给场景块（太老的 runner）→ `inconclusive` + `runner_too_old`；
+/// - 场景块存在 → 采信 runner 的 verdict/reason/断言；但 `passed` 从不自夸：
+///   runner 声称 passed 而任一断言不是 passed，或回块的 scenarioId 与请求不符
+///   → 降级 `inconclusive` + `unresolved_assertions`；
+/// - City 路径附带 `worldSnapshotDigest`（runner telemetry 回显优先，宿主冻结
+///   digest 兜底；合成路径无世界摘要，字段缺席）。
+fn code_test_success_verdict(
+    scenario: Option<&CodeTestScenario>,
+    scenario_block: Option<&Value>,
+    city_snapshot: Option<&CityTestSnapshot>,
+    telemetry: &Value,
+) -> Value {
+    let mut extras = serde_json::Map::new();
+    extras.insert("executionOk".into(), json!(true));
+    let world_snapshot_digest = telemetry
+        .get("snapshotDigest")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| city_snapshot.map(|snapshot| snapshot.digest.clone()));
+    if let Some(digest) = world_snapshot_digest {
+        extras.insert("worldSnapshotDigest".into(), json!(digest));
+    }
+    let (Some(request), Some(block)) = (scenario, scenario_block) else {
+        if let Some(request) = scenario {
+            // 请求了场景但 runner 没给场景块（太老的 runner）。
+            extras.insert("scenarioId".into(), json!(request.scenario_id));
+            extras.insert("verdict".into(), json!("inconclusive"));
+            extras.insert("verdictReason".into(), json!("runner_too_old"));
+        } else {
+            extras.insert("verdict".into(), json!("inconclusive"));
+            extras.insert("verdictReason".into(), json!("no_scenario"));
+        }
+        return Value::Object(extras);
+    };
+    extras.insert("scenarioId".into(), json!(request.scenario_id));
+    let Some(block) = block.as_object() else {
+        extras.insert("verdict".into(), json!("inconclusive"));
+        extras.insert("verdictReason".into(), json!("runner_too_old"));
+        return Value::Object(extras);
+    };
+    let verdict = block.get("verdict").and_then(Value::as_str)
+        .filter(|value| matches!(*value, "passed" | "failed" | "inconclusive"));
+    let assertions = block.get("assertions").and_then(Value::as_array)
+        .filter(|items| items.iter().all(|item| item.get("id").and_then(Value::as_str).is_some() && item.get("status").and_then(Value::as_str).is_some()));
+    let all_assertions_passed = assertions
+        .map(|items| !items.is_empty() && items.iter().all(|item| item.get("status").and_then(Value::as_str) == Some("passed")))
+        .unwrap_or(false);
+    // 自洽复核：`passed` 需要场景身份一致 + 断言全过（断言块不得为空）；
+    // 否则降级 inconclusive。
+    let consistent = block.get("scenarioId").and_then(Value::as_str) == Some(request.scenario_id.as_str())
+        && assertions.is_some()
+        && (!matches!(verdict, Some("passed")) || all_assertions_passed);
+    let (verdict, reason) = match (verdict, consistent) {
+        (Some("passed"), true) => ("passed", None),
+        (Some(v), true) => (v, block.get("verdictReason").and_then(Value::as_str)),
+        _ => ("inconclusive", Some("unresolved_assertions")),
+    };
+    extras.insert("verdict".into(), json!(verdict));
+    if let Some(reason) = reason.filter(|_| verdict != "passed") {
+        extras.insert("verdictReason".into(), json!(reason));
+    }
+    if let Some(items) = assertions {
+        extras.insert("assertions".into(), json!(items.iter().take(8).cloned().collect::<Vec<_>>()));
+    }
+    Value::Object(extras)
+}
+
+/// PR06 只读读面：`state/creator/code-games/tests/<buildId>.json` 的有界回读。
+/// 记录按 buildId 单键寻址（同 `creator_code_build_status`），内容只有测试结论
+/// 与世界身份，无路径无秘密；不需要 `--allow-local-writes`。
+fn code_test_record(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+    let build_id = build_id_arg(args)?;
+    let path = data_home
+        .join("state/creator/code-games")
+        .join("tests")
+        .join(format!("{build_id}.json"));
+    let bytes = std::fs::read(&path)
+        .map_err(|_| ToolError::new("not_found", "No headless test record for that buildId in this data home."))?;
+    if bytes.len() > MAX_FILE_BYTES {
+        return Err(ToolError::new("data_unavailable", "The test record exceeds the read budget."));
+    }
+    let record: Value = serde_json::from_slice(&bytes)
+        .map_err(|_| ToolError::new("data_unavailable", "The test record is malformed."))?;
+    if record.get("buildId").and_then(Value::as_str) != Some(build_id.as_str()) {
+        return Err(ToolError::new("data_unavailable", "The test record does not match the requested buildId."));
+    }
+    Ok(json!({"ok":true,"data":record}))
 }
 
 // ── City Snapshot Test（PR05）───────────────────────────────────────
@@ -904,21 +1115,23 @@ fn resolve_city_test_snapshot(data_home: &Path, city_id: &str, city_revision: u6
             _ => city_snapshot_unavailable(&format!("The host could not resolve the City snapshot ({code}).")),
         });
     }
-    // 3) 回执自洽复核（宿主声明 vs 快照 header 的世界身份）。
+    // 3) 回执自洽复核（宿主声明 vs 快照 header 的世界身份）。真实 SDK 快照的
+    // header.snapshotDigest 是 `sha256:<64hex>` 前缀格式，runner 的
+    // `--snapshot-digest` 对照也按 header 全串比较——因此回执声明必须与 header
+    // 逐字相等并原样下传，绝不重写；格式接受前缀或裸 64-hex（向后兼容）。
     let result = &response["result"];
-    let digest = result["snapshotDigest"].as_str().filter(|value| {
-        value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    });
-    let Some(digest) = digest else {
+    let declared = result["snapshotDigest"].as_str().unwrap_or_default();
+    let digest_hex = declared.strip_prefix("sha256:").unwrap_or(declared);
+    if digest_hex.len() != 64 || !digest_hex.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) {
         return Err(city_snapshot_unavailable("The host's snapshot receipt carries no usable snapshotDigest."));
-    };
+    }
     let Some(snapshot_json) = result["snapshotJson"].as_str() else {
         return Err(city_snapshot_unavailable("The host's snapshot receipt carries no snapshot bytes."));
     };
     let parsed: Value = serde_json::from_str(snapshot_json)
         .map_err(|_| ToolError::new("creator_city_snapshot_invalid", "The host's frozen City snapshot is not valid JSON."))?;
     let header = &parsed["header"];
-    if header["snapshotDigest"].as_str() != Some(digest)
+    if header["snapshotDigest"].as_str() != Some(declared)
         || header["cityId"].as_str() != Some(city_id)
         || header["cityRevision"].as_u64() != Some(city_revision)
     {
@@ -932,7 +1145,7 @@ fn resolve_city_test_snapshot(data_home: &Path, city_id: &str, city_revision: u6
     Ok(CityTestSnapshot {
         city_id: city_id.to_owned(),
         city_revision,
-        digest: digest.to_owned(),
+        digest: declared.to_owned(),
         staged_path,
     })
 }
@@ -970,21 +1183,27 @@ fn stage_city_snapshot(data_home: &Path, city_id: &str, city_revision: u64, byte
     Ok(target)
 }
 
-/// PR07 发布门消费的最小试玩记录（PR06 将扩展 verdict/scenario/assertions 字段；
-/// 本 PR 不接任何消费方）。每次真正跑到 runner 的 code_test（合成与 City 两条路径
-/// 都算）落一条：ok 反映 runner 结果；解析期诊断（城市缺失/stale/宿主缺席）没有
-/// 运行发生，不落记录，由结构化 ToolError 负责。落盘
+/// PR07 发布门消费的最小试玩记录，PR06 起扩展 `executionOk/verdict/
+/// verdictReason/scenarioId/assertions/worldSnapshotDigest`（`verdict` 块由调用
+/// 方给齐，缺失字段按缺席落盘）。每次真正跑到 runner 的 code_test（合成与 City
+/// 两条路径都算）落一条：ok 反映 runner 结果；解析期诊断（城市缺失/stale/宿主
+/// 缺席）没有运行发生，不落记录，由结构化 ToolError 负责。落盘
 /// `<data_home>/state/creator/code-games/tests/<buildId>.json`，tmp+rename 原子发布。
-fn write_test_record(data_home: &Path, build_id: &str, workspace_revision: &str, ok: bool, seed: u64, ticks: u64, source: &Value) -> Result<(), ToolError> {
-    let record = json!({
+fn write_test_record(data_home: &Path, build_id: &str, workspace_revision: &str, seed: u64, ticks: u64, outcome: &CodeTestOutcome) -> Result<(), ToolError> {
+    let mut record = json!({
         "buildId": build_id,
         "workspaceRevision": workspace_revision,
-        "ok": ok,
+        "ok": outcome.ok,
         "seed": seed,
         "ticks": ticks,
-        "source": source,
+        "source": outcome.source,
         "atMs": now_ms(),
     });
+    if let (Some(base), Some(extras)) = (record.as_object_mut(), outcome.verdict.as_object()) {
+        for (key, value) in extras {
+            base.insert(key.clone(), value.clone());
+        }
+    }
     let root = data_home.join("state/creator/code-games").join("tests");
     std::fs::create_dir_all(&root)
         .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the code test record directory."))?;
@@ -1768,7 +1987,9 @@ mod tests {
     fn city_test_source_resolves_via_the_host_and_stages_the_frozen_snapshot() {
         let home = std::env::temp_dir().join(format!("code-game-city-resolve-{}-{}", now_ms(), std::process::id()));
         prepare_city_fixture(&home);
-        let digest = sha256_hex(b"city-fixture");
+        // 真实 SDK 快照的 snapshotDigest 是 `sha256:` 前缀格式（schema.ts 定值模式）：
+        // 回执声明、header、传给 runner 的 `--snapshot-digest` 三处必须逐字一致。
+        let digest = format!("sha256:{}", sha256_hex(b"city-fixture"));
         let snapshot_json = fixture_snapshot("city-1", 7, &digest);
         let host = fake_snapshot_host(&home, json!({"ok":true,"result":{"snapshotDigest":digest,"snapshotJson":snapshot_json}}));
         let resolved = resolve_city_test_snapshot(&home, "city-1", 7).unwrap();
@@ -1785,6 +2006,22 @@ mod tests {
         let echoed = code_test_source_record(Some(&resolved), &telemetry);
         assert_eq!(echoed, json!({"source":"city","cityId":"city-1","cityRevision":7,"snapshotDigest":sha256_hex(b"telemetry")}));
         assert_eq!(code_test_source_record(None, &Value::Null), json!({"source":"synthetic"}));
+        host.store(true, std::sync::atomic::Ordering::Relaxed);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// 回执声明与快照 header 逐字相等（digest/cityId/cityRevision 任一不符即
+    /// `creator_city_snapshot_invalid`），绝不重写后放行。
+    #[test]
+    fn city_snapshot_receipt_must_match_the_header_verbatim() {
+        let home = std::env::temp_dir().join(format!("code-game-city-receipt-{}-{}", now_ms(), std::process::id()));
+        prepare_city_fixture(&home);
+        let prefixed = format!("sha256:{}", sha256_hex(b"city-fixture"));
+        // 声明与 header 不一致（裸 hash vs 前缀）：拒收，不重写放行。
+        let mismatch = json!({"ok":true,"result":{"snapshotDigest":sha256_hex(b"city-fixture"),
+            "snapshotJson": fixture_snapshot("city-1", 7, &prefixed)}});
+        let host = fake_snapshot_host(&home, mismatch);
+        assert_eq!(resolve_city_test_snapshot(&home, "city-1", 7).unwrap_err().code, "creator_city_snapshot_invalid");
         host.store(true, std::sync::atomic::Ordering::Relaxed);
         std::fs::remove_dir_all(home).ok();
     }
@@ -1885,13 +2122,14 @@ mod tests {
     }
 
     /// PR07 门最小记录：合成与 City 两条路径的记录形状、原子发布（无 .tmp 残留）
-    /// 与同 buildId 覆盖语义。PR06 将扩展 verdict/scenario/assertions 字段。
+    /// 与同 buildId 覆盖语义。PR06 起记录带 executionOk/verdict 块。
     #[test]
     fn test_records_are_atomic_and_reflect_the_source() {
         let home = std::env::temp_dir().join(format!("code-game-city-record-{}-{}", now_ms(), std::process::id()));
         let build_id = "a".repeat(64);
         let synthetic = json!({"source":"synthetic"});
-        write_test_record(&home, &build_id, "b".repeat(64).as_str(), true, 7, 600, &synthetic).unwrap();
+        let verdict = json!({"executionOk": true, "verdict": "passed"});
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: true, source: &synthetic, verdict: &verdict }).unwrap();
         let path = home.join("state/creator/code-games/tests").join(format!("{build_id}.json"));
         let record: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(record["buildId"], build_id);
@@ -1900,13 +2138,132 @@ mod tests {
         assert_eq!(record["seed"], 7);
         assert_eq!(record["ticks"], 600);
         assert_eq!(record["source"], synthetic);
+        assert_eq!(record["executionOk"], true);
+        assert_eq!(record["verdict"], "passed");
         assert!(record["atMs"].is_u64());
         assert!(!path.with_extension("json.tmp").exists(), "records must publish atomically");
         let city = json!({"source":"city","cityId":"city-1","cityRevision":7,"snapshotDigest":sha256_hex(b"city-fixture")});
-        write_test_record(&home, &build_id, "b".repeat(64).as_str(), false, 7, 600, &city).unwrap();
+        let failed_verdict = json!({"executionOk": false, "verdict": "failed", "verdictReason": "runner_failed"});
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: false, source: &city, verdict: &failed_verdict }).unwrap();
         let overwritten: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(overwritten["ok"], false);
         assert_eq!(overwritten["source"], city);
+        assert_eq!(overwritten["executionOk"], false);
+        assert_eq!(overwritten["verdict"], "failed");
+        assert_eq!(overwritten["verdictReason"], "runner_failed");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    // ── PR06 场景/裁决 ──────────────────────────────────────────────
+
+    /// MCP 侧场景形状检查：缺省 = 无场景；超长/坏 JSON/schemaVersion/kind 词表
+    /// 越界是 invalid_argument（字段级 cap 与 counter 词表校验留在 runner）。
+    #[test]
+    fn code_test_scenario_shape_checks_are_bounded_and_fail_closed() {
+        assert!(code_test_scenario(&json!({})).unwrap().is_none());
+        let ok = code_test_scenario(&json!({"scenario": r#"{"schemaVersion":1,"scenarioId":"s.win","assertions":[{"id":"a","kind":"outcome","expectOutcome":"success"}]}"#})).unwrap().unwrap();
+        assert_eq!(ok.scenario_id, "s.win");
+        for bad in [
+            json!({"scenario": ""}),
+            json!({"scenario": "x".repeat(8_193)}),
+            json!({"scenario": "{not json"}),
+            json!({"scenario": r#"{"schemaVersion":2,"scenarioId":"s","assertions":[{"id":"a","kind":"outcome","expectOutcome":"success"}]}"#}),
+            json!({"scenario": r#"{"schemaVersion":1,"assertions":[{"id":"a","kind":"outcome","expectOutcome":"success"}]}"#}),
+            json!({"scenario": r#"{"schemaVersion":1,"scenarioId":"s","assertions":[]}"#}),
+            json!({"scenario": r#"{"schemaVersion":1,"scenarioId":"s","assertions":[{"id":"a","kind":"entityPresent"}]}"#}),
+        ] {
+            assert_eq!(code_test_scenario(&bad).unwrap_err().code, "invalid_argument");
+        }
+    }
+
+    /// 裁决决策表：无场景 → inconclusive/no_scenario；runner 太老 →
+    /// inconclusive/runner_too_old；passed 必须自洽（身份一致 + 断言全过），
+    /// 否则降级 inconclusive/unresolved_assertions；失败路径恒 failed。
+    #[test]
+    fn code_test_verdict_follows_the_decision_table() {
+        let request = code_test_scenario(&json!({"scenario": r#"{"schemaVersion":1,"scenarioId":"s.win","assertions":[{"id":"a","kind":"outcome","expectOutcome":"success"}]}"#})).unwrap().unwrap();
+
+        let no_scenario = code_test_success_verdict(None, None, None, &Value::Null);
+        assert_eq!(no_scenario["executionOk"], true);
+        assert_eq!(no_scenario["verdict"], "inconclusive");
+        assert_eq!(no_scenario["verdictReason"], "no_scenario");
+
+        let runner_too_old = code_test_success_verdict(Some(&request), None, None, &Value::Null);
+        assert_eq!(runner_too_old["verdict"], "inconclusive");
+        assert_eq!(runner_too_old["verdictReason"], "runner_too_old");
+        assert_eq!(runner_too_old["scenarioId"], "s.win");
+
+        let passing_block = json!({
+            "scenarioId": "s.win", "verdict": "passed",
+            "assertions": [{"id":"a","kind":"outcome","status":"passed"}],
+        });
+        let passed = code_test_success_verdict(Some(&request), Some(&passing_block), None, &Value::Null);
+        assert_eq!(passed["verdict"], "passed");
+        assert_eq!(passed["assertions"].as_array().map(Vec::len), Some(1));
+        assert!(!passed.as_object().unwrap().contains_key("verdictReason"));
+
+        // runner 声称 passed 但断言并非全过 → 降级，绝不 passed。
+        let lying_block = json!({
+            "scenarioId": "s.win", "verdict": "passed",
+            "assertions": [{"id":"a","kind":"outcome","status":"failed"}],
+        });
+        let downgraded = code_test_success_verdict(Some(&request), Some(&lying_block), None, &Value::Null);
+        assert_eq!(downgraded["verdict"], "inconclusive");
+        assert_eq!(downgraded["verdictReason"], "unresolved_assertions");
+
+        let failed_block = json!({
+            "scenarioId": "s.win", "verdict": "failed",
+            "assertions": [{"id":"a","kind":"outcome","status":"failed","diagnostic":"Outcome was failure."}],
+        });
+        let failed = code_test_success_verdict(Some(&request), Some(&failed_block), None, &Value::Null);
+        assert_eq!(failed["verdict"], "failed");
+        assert_eq!(failed["verdictReason"], Value::Null);
+
+        // City 路径带世界摘要（telemetry 回显优先，宿主冻结 digest 兜底）；合成路径缺席。
+        let snapshot = CityTestSnapshot {
+            city_id: "city-1".into(),
+            city_revision: 7,
+            digest: sha256_hex(b"host"),
+            staged_path: PathBuf::from("/unused"),
+        };
+        let echoed = json!({"snapshotDigest": sha256_hex(b"telemetry")});
+        let with_digest = code_test_success_verdict(None, None, Some(&snapshot), &echoed);
+        assert_eq!(with_digest["worldSnapshotDigest"], sha256_hex(b"telemetry"));
+        let fallback = code_test_success_verdict(None, None, Some(&snapshot), &Value::Null);
+        assert_eq!(fallback["worldSnapshotDigest"], sha256_hex(b"host"));
+        let synthetic = code_test_success_verdict(None, None, None, &Value::Null);
+        assert!(!synthetic.as_object().unwrap().contains_key("worldSnapshotDigest"));
+
+        let failure = code_test_failure_verdict(Some(&request), "runner_timeout");
+        assert_eq!(failure["executionOk"], false);
+        assert_eq!(failure["verdict"], "failed");
+        assert_eq!(failure["verdictReason"], "runner_timeout");
+        assert_eq!(failure["scenarioId"], "s.win");
+    }
+
+    /// 只读读面：按 buildId 回读记录（不需要 --allow-local-writes）；缺失
+    /// not_found、buildId 不符 data_unavailable。
+    #[test]
+    fn code_test_record_is_a_bounded_read_only_projection() {
+        let home = std::env::temp_dir().join(format!("code-game-record-read-{}-{}", now_ms(), std::process::id()));
+        let build_id = "a".repeat(64);
+        let missing = run("creator_code_test_record", &json!({"buildId": build_id}), &home, false).unwrap_err();
+        assert_eq!(missing.code, "not_found");
+        let source = json!({"source":"synthetic"});
+        let verdict = json!({"executionOk": true, "verdict": "passed", "scenarioId": "s.win"});
+        write_test_record(&home, &build_id, "b".repeat(64).as_str(), 7, 600, &CodeTestOutcome { ok: true, source: &source, verdict: &verdict }).unwrap();
+        let read = run("creator_code_test_record", &json!({"buildId": build_id}), &home, false).unwrap();
+        assert_eq!(read["ok"], true);
+        assert_eq!(read["data"]["verdict"], "passed");
+        assert_eq!(read["data"]["scenarioId"], "s.win");
+        let bad = run("creator_code_test_record", &json!({"buildId": "zz"}), &home, false).unwrap_err();
+        assert_eq!(bad.code, "invalid_argument");
+        let mismatch_id = "c".repeat(64);
+        let wrong_identity = home.join("state/creator/code-games/tests").join(format!("{mismatch_id}.json"));
+        std::fs::create_dir_all(wrong_identity.parent().unwrap()).unwrap();
+        std::fs::write(&wrong_identity, br#"{"buildId":"c"}"#).unwrap();
+        let mismatch = run("creator_code_test_record", &json!({"buildId": mismatch_id}), &home, false).unwrap_err();
+        assert_eq!(mismatch.code, "data_unavailable");
         std::fs::remove_dir_all(home).ok();
     }
 }

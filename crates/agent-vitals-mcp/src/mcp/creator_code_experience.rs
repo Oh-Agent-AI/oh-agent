@@ -32,7 +32,7 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec(
             "creator_code_publish",
-            "Package one immutable Code Game build into a self-contained local experience (bundle + declared assets + permissions + world binding + per-file digests + contentDigest). Publishing is not installation and is not a trust claim: it never executes code and never enables distribution. Requires a passing headless `creator_code_test` record for the exact `buildId` whose workspace revision still matches the build. `permissionsAccepted` must be true. Requires `--allow-local-writes`.",
+            "Package one immutable Code Game build into a self-contained local experience (bundle + declared assets + permissions + world binding + per-file digests + contentDigest). Publishing is not installation and is not a trust claim: it never executes code and never enables distribution. Requires a headless `creator_code_test` record for the exact `buildId` with `ok=true`, verdict `passed` (pre-PR06 records without a verdict are stale) and a workspace revision that still matches the build. `permissionsAccepted` must be true. Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
@@ -113,6 +113,10 @@ fn publish(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     // `workspaceRevision` 与本次重算的构建身份一致。缺失/失败
     // → `creator_code_test_evidence_required`；构建身份对不上（测后又改）→
     // `creator_code_test_evidence_stale`。先测试、后发布。
+    // PR06 门禁收紧：`ok=true` 只说明 runner 跑完了，不代表游戏通过。发布还要求
+    // 记录带 `verdict === "passed"`：无 verdict 的记录是 PR06 之前的旧证据 →
+    // 按 stale 拒绝（要求重跑 creator_code_test）；verdict failed/inconclusive →
+    // `creator_code_test_evidence_required`（证据在、但不构成通过证明）。
     let tests_dir = data_home.join("state/creator/code-games").join("tests");
     let test_record = read_json(&tests_dir.join(format!("{build_id}.json"))).ok_or_else(|| {
         ToolError::new("creator_code_test_evidence_required",
@@ -122,6 +126,15 @@ fn publish(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
         || test_record.get("ok").and_then(Value::as_bool) != Some(true) {
         return Err(ToolError::new("creator_code_test_evidence_required",
             "The headless test record for this buildId is missing or did not pass. Run `creator_code_test` and publish only after it succeeds."));
+    }
+    if test_record.get("verdict").and_then(Value::as_str) != Some("passed") {
+        return Err(match test_record.get("verdict").and_then(Value::as_str) {
+            Some(verdict) => ToolError::new("creator_code_test_evidence_required",
+                format!("The headless test record's verdict is `{verdict}`, not `passed`; a completed run is not a passing game. Re-run `creator_code_test` (optionally with a `scenario`) until the verdict is `passed`, then publish.")),
+            // PR06 之前的旧记录没有 verdict 字段：无法证明游戏通过，按过期证据拒绝。
+            None => ToolError::new("creator_code_test_evidence_stale",
+                "This build's test record predates scenario verdicts (pre-PR06) and carries no `verdict`. Run `creator_code_test` again to produce a record with a passing verdict, then publish."),
+        });
     }
     if test_record.get("workspaceRevision").and_then(Value::as_str) != Some(game_revision.as_str()) {
         return Err(ToolError::new("creator_code_test_evidence_stale",
@@ -563,7 +576,8 @@ mod tests {
 
         // PR07 证据门禁：没有同 buildId 的 creator_code_test 记录不能发布；记录
         // 失败（ok=false）同样拒绝；workspaceRevision 与构建身份不符按过期拒绝；
-        // 通过的记录放行发布。
+        // 通过的记录放行发布。PR06 收紧：记录必须 verdict="passed"——无 verdict
+        // 的 pre-PR06 记录按 stale 拒绝，verdict failed/inconclusive 按 required 拒绝。
         let publish_args = json!({
             "workspaceId": "gws-0000000000000000", "buildId": build_id, "permissionsAccepted": true,
         });
@@ -574,18 +588,37 @@ mod tests {
         write_json(&tests.join(format!("{build_id}.json")), &json!({
             "buildId": build_id, "workspaceRevision": revision, "ok": false, "seed": 7, "ticks": 10,
             "source": {"synthetic": true}, "atMs": 1,
+            "executionOk": false, "verdict": "failed", "verdictReason": "runner_failed",
         })).unwrap();
         let failing = run("creator_code_publish", &publish_args, &home, true).unwrap_err();
         assert_eq!(failing.code, "creator_code_test_evidence_required");
+        // pre-PR06 记录：ok=true 但没有 verdict → stale，必须重跑 creator_code_test。
+        write_json(&tests.join(format!("{build_id}.json")), &json!({
+            "buildId": build_id, "workspaceRevision": revision, "ok": true, "seed": 7, "ticks": 10,
+            "source": {"synthetic": true}, "atMs": 1,
+        })).unwrap();
+        let pre_pr06 = run("creator_code_publish", &publish_args, &home, true).unwrap_err();
+        assert_eq!(pre_pr06.code, "creator_code_test_evidence_stale");
+        assert!(pre_pr06.message.contains("creator_code_test"), "stale message must tell the caller to re-run the test");
+        // verdict=inconclusive（含 runner 跑完但场景无法评定）→ 不构成通过证明。
+        write_json(&tests.join(format!("{build_id}.json")), &json!({
+            "buildId": build_id, "workspaceRevision": revision, "ok": true, "seed": 7, "ticks": 10,
+            "source": {"synthetic": true}, "atMs": 1,
+            "executionOk": true, "verdict": "inconclusive", "verdictReason": "no_scenario",
+        })).unwrap();
+        let inconclusive = run("creator_code_publish", &publish_args, &home, true).unwrap_err();
+        assert_eq!(inconclusive.code, "creator_code_test_evidence_required");
         write_json(&tests.join(format!("{build_id}.json")), &json!({
             "buildId": build_id, "workspaceRevision": "c".repeat(64), "ok": true, "seed": 7, "ticks": 10,
             "source": {"synthetic": true}, "atMs": 1,
+            "executionOk": true, "verdict": "passed",
         })).unwrap();
         let stale = run("creator_code_publish", &publish_args, &home, true).unwrap_err();
         assert_eq!(stale.code, "creator_code_test_evidence_stale");
         write_json(&tests.join(format!("{build_id}.json")), &json!({
             "buildId": build_id, "workspaceRevision": revision, "ok": true, "seed": 7, "ticks": 10,
             "source": {"synthetic": true}, "atMs": 1,
+            "executionOk": true, "verdict": "passed",
         })).unwrap();
 
         // 发布：必须显式接受权限，且不落库。

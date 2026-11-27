@@ -4,7 +4,20 @@ import { errorCode } from "../../adapters/creatorHostUtils";
 import type { PlaytestRun, ProjectRow } from "../../contracts/creatorStudio";
 import { candidateEvidenceTrust, parseProjectCandidate, type ProjectCandidate } from "../../contracts/candidate";
 import { parseCodeBuilds, type CodeBuildRowV1 } from "../../codeGamePreview";
-import { parseCityDiagnostics, parseGroundInspection, parsePlaytestHistory, traceSummary, type CityDiagnostic, type GroundInspection } from "./evidenceCenterModel";
+import { parseCityDiagnostics, parseCodeTestRecord, parseGroundInspection, parsePlaytestHistory, traceSummary, type CityDiagnostic, type CodeTestRecordV1, type GroundInspection } from "./evidenceCenterModel";
+
+/** PR06：无头 Code Game 测试记录的证据卡。执行成功（executionOk）与游戏结论
+ * （verdict）分开呈现；逐断言结果与世界身份折叠展示，原始记录不展开。 */
+const codeTestVerdictLabel = (record: CodeTestRecordV1): string =>
+  record.verdict === "passed" ? "场景通过" : record.verdict === "failed" ? "场景未通过" : `不确定（${record.verdictReason ?? "无原因"}）`;
+
+function CodeTestEvidence({ record }: Readonly<{ record: CodeTestRecordV1 }>) {
+  return <div className="code-test-evidence">
+    <p>无头测试：executionOk {String(record.executionOk)} · <strong>{codeTestVerdictLabel(record)}</strong></p>
+    <p className="muted">源 revision {record.workspaceRevision ?? "未知"}{record.scenarioId ? ` · 场景 ${record.scenarioId}` : " · 未指定场景"}{record.cityId ? ` · City ${record.cityId} rev ${record.cityRevision ?? "未知"}` : " · 合成 fixture"}{record.snapshotDigest || record.worldSnapshotDigest ? ` · snapshot ${(record.worldSnapshotDigest ?? record.snapshotDigest ?? "").slice(0, 12)}…` : ""}</p>
+    {record.assertions.length > 0 && <details><summary>逐断言结果（{record.assertions.length}）</summary><pre className="agent-proposal-content">{JSON.stringify(record.assertions, null, 2)}</pre></details>}
+  </div>;
+}
 
 function RunEvidence({ run }: Readonly<{ run: PlaytestRun }>) {
   const trace = traceSummary(run.evidence);
@@ -31,6 +44,7 @@ export function EvidenceCenterPanel(props: Readonly<{
   const [runs, setRuns] = useState<readonly PlaytestRun[]>([]);
   const [diagnostics, setDiagnostics] = useState<readonly CityDiagnostic[]>([]);
   const [builds, setBuilds] = useState<readonly CodeBuildRowV1[]>([]);
+  const [testRecords, setTestRecords] = useState<Readonly<Record<string, CodeTestRecordV1>>>({});
   const [loading, setLoading] = useState(!browserPreview);
   const [error, setError] = useState("");
   const [groundBusy, setGroundBusy] = useState(false);
@@ -44,7 +58,18 @@ export function EvidenceCenterPanel(props: Readonly<{
       const result = await request<{ projects: ProjectRow[] }>("creator.project.list", { limit: 50 });
       setProjects(result.projects);
       setProjectId(current => result.projects.some(row => row.projectId === current) ? current : result.projects[0]?.projectId ?? "");
-      setBuilds(parseCodeBuilds(await request("creator.code.builds.list", { limit: 50 })));
+      const buildRows = parseCodeBuilds(await request("creator.code.builds.list", { limit: 50 }));
+      setBuilds(buildRows);
+      // PR06：有界回读无头测试记录（每 build 一条）。桌面宿主的 creator.* 路由
+      // 尚未接入 creator_code_test_record 时逐条降级为缺席，不阻塞证据视图。
+      const settled = await Promise.allSettled(buildRows.slice(0, 8).map(build => request("creator.code.test.record", { buildId: build.buildId })));
+      const records: Record<string, CodeTestRecordV1> = {};
+      for (const outcome of settled) {
+        if (outcome.status === "fulfilled") {
+          try { const record = parseCodeTestRecord(outcome.value); records[record.buildId] = record; } catch { /* 坏记录不阻塞 */ }
+        }
+      }
+      setTestRecords(records);
     } catch (cause) { setError(errorCode(cause, "creator_evidence_unavailable")); }
     finally { setLoading(false); }
   }, [browserPreview, request]);
@@ -86,7 +111,7 @@ export function EvidenceCenterPanel(props: Readonly<{
         {runs.length === 0 ? <p className="muted">当前项目没有试玩 Run。</p> : runs.map(run => <RunEvidence key={run.runId} run={run} />)}
       </section>
       <section className="evidence-section"><span className="section-title">不可变 Code Build</span><p className="muted">Build 是全局不可变产物；没有项目绑定时不推断其归属。</p>
-        {builds.length === 0 ? <p className="muted">尚无 Code Build。</p> : builds.map(build => <article key={build.buildId}><code>{build.buildId}</code><p>{build.gameId} · {build.gameVersion ?? "未知版本"} · {build.byteLength ?? "未知"} bytes</p></article>)}
+        {builds.length === 0 ? <p className="muted">尚无 Code Build。</p> : builds.map(build => <article key={build.buildId}><code>{build.buildId}</code><p>{build.gameId} · {build.gameVersion ?? "未知版本"} · {build.byteLength ?? "未知"} bytes</p>{testRecords[build.buildId] && <CodeTestEvidence record={testRecords[build.buildId]} />}</article>)}
       </section>
       <section className="evidence-section"><span className="section-title">City 生命周期诊断</span><p className="muted">这些是持久化、脱敏的 Host 事件，不是物理接地证明。</p>
         {diagnostics.length === 0 ? <p className="muted">当前项目未绑定 City，或该 City 没有诊断事件。</p> : diagnostics.map((item, index) => <article key={`${item.correlationId}:${item.atMs}:${index}`}><code>{item.event}{item.code ? ` · ${item.code}` : ""}</code><p>City revision {item.revision} · {item.correlationId} · {item.elapsedMs === null ? "未知耗时" : `${item.elapsedMs} ms`}</p></article>)}

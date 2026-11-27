@@ -41,6 +41,59 @@ export function traceSummary(evidence: unknown): TraceSummary | null {
     hostDisagreement: object(row.hostDisagreement) !== null });
 }
 
+/** PR06：无头 Code Game 测试记录（`creator_code_test` 落盘、
+ * `creator_code_test_record` 读出）的证据投影。「执行成功」与「测试通过」分开：
+ * executionOk 只说明 runner 跑完，verdict 才是游戏结论（passed/failed/inconclusive）。
+ * pre-PR06 记录没有 verdict，解析直接拒绝（发布门同样按 stale 拒绝）。 */
+export const CODE_TEST_VERDICTS = ["passed", "failed", "inconclusive"] as const;
+export type CodeTestVerdict = (typeof CODE_TEST_VERDICTS)[number];
+const CODE_TEST_ASSERTION_KINDS = ["outcome", "entityCountAtLeast", "entityCountAtMost", "hudFlag", "counterAtLeast", "counterEquals", "finishedWithinTicks"] as const;
+const CODE_TEST_ASSERTION_STATUSES = ["passed", "failed", "unknown"] as const;
+
+export type CodeTestAssertionRow = Readonly<{ id: string; kind: string; status: (typeof CODE_TEST_ASSERTION_STATUSES)[number]; diagnostic: string | null }>;
+
+export type CodeTestRecordV1 = Readonly<{
+  buildId: string;
+  workspaceRevision: string | null;
+  ok: boolean;
+  executionOk: boolean;
+  verdict: CodeTestVerdict;
+  verdictReason: string | null;
+  scenarioId: string | null;
+  assertions: readonly CodeTestAssertionRow[];
+  worldSnapshotDigest: string | null;
+  source: Readonly<Record<string, unknown>> | null;
+  cityId: string | null;
+  cityRevision: number | null;
+  snapshotDigest: string | null;
+}>;
+
+const digest = (value: unknown): string | null => typeof value === "string" && /^[a-f0-9]{64}$/.test(value) ? value : null;
+
+export function parseCodeTestRecord(value: unknown): CodeTestRecordV1 {
+  const row = object(value);
+  const buildId = digest(row?.buildId);
+  const ok = typeof row?.ok === "boolean" ? row.ok : null;
+  const executionOk = typeof row?.executionOk === "boolean" ? row.executionOk : null;
+  const verdict = typeof row?.verdict === "string" && (CODE_TEST_VERDICTS as readonly string[]).includes(row.verdict) ? row.verdict as CodeTestVerdict : null;
+  if (!row || !buildId || ok === null || executionOk === null || !verdict) throw new Error("creator_code_test_record_invalid");
+  const assertions = Array.isArray(row.assertions) ? Object.freeze(row.assertions.slice(0, 8).map(item => {
+    const assertion = object(item);
+    const id = text(assertion?.id, 64);
+    const kind = typeof assertion?.kind === "string" && (CODE_TEST_ASSERTION_KINDS as readonly string[]).includes(assertion.kind) ? assertion.kind : null;
+    const status = typeof assertion?.status === "string" && (CODE_TEST_ASSERTION_STATUSES as readonly string[]).includes(assertion.status) ? assertion.status : null;
+    if (!assertion || !id || !kind || !status) throw new Error("creator_code_test_record_invalid");
+    return Object.freeze({ id, kind, status: status as CodeTestAssertionRow["status"], diagnostic: text(assertion.diagnostic, 200) });
+  })) : [];
+  const source = object(row.source);
+  return Object.freeze({
+    buildId, workspaceRevision: text(row.workspaceRevision, 64), ok, executionOk, verdict,
+    verdictReason: text(row.verdictReason, 64), scenarioId: text(row.scenarioId, 128),
+    assertions, worldSnapshotDigest: digest(row.worldSnapshotDigest), source,
+    cityId: text(source?.cityId, 128), cityRevision: number(source?.cityRevision), snapshotDigest: digest(source?.snapshotDigest),
+  });
+}
+
 export type GroundInspection = Readonly<{
   status: "ready" | "unsupported";
   regionId: string | null;

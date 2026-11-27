@@ -9,6 +9,7 @@ import { createSnapshotWorldAPIV2 } from "../src/host/snapshotWorld.ts";
 import { createV1WorldFromV2 } from "../src/host/codeGameHostV2.ts";
 import { createCodeGameHostV1 } from "../src/host/codeGameHost.ts";
 import { createGameTestWorld } from "../src/testing/index.ts";
+import { evaluateGameTestScenarioV1, validateGameTestScenarioV1, type GameTestScenarioV1 } from "../src/testing/scenario.ts";
 import { createCodeGameHostV2 } from "../src/host/codeGameHostV2.ts";
 import { createGameAccessV1, type HostGrantV1 } from "../src/protocol/access.ts";
 import {
@@ -29,6 +30,7 @@ const legacyBundlePath = argument("bundle");
 const legacyManifestPath = argument("manifest");
 const snapshotPath = argument("snapshot");
 const expectedSnapshotDigest = argument("snapshot-digest");
+const scenarioRaw = argument("scenario");
 const seed = Number(argument("seed") ?? 7);
 const ticks = Number(argument("ticks") ?? 600);
 const sealedRequest = Boolean(buildId && buildsDir) || Boolean(buildDir);
@@ -40,6 +42,10 @@ const incompleteRequest = Boolean(buildId && !buildsDir) || Boolean(buildsDir &&
 /** Defense in depth (PR04): mirrors the MCP `creator_code_test` cap, so a
  * direct invocation cannot request an unbounded run either. */
 const MAX_TICKS = 3_600;
+/** PR06: inline scenario JSON travels through argv; the same bound as the MCP
+ * `creator_code_test` schema keeps a direct invocation from smuggling in an
+ * unbounded document. Over the limit is a structured argument error. */
+const MAX_SCENARIO_JSON = 8_192;
 /** Wall-clock deadline for the run loops (PR04). A bundle whose step() never
  * returns would otherwise hang this process forever; the deadline sits below
  * the MCP runner's own test budget (60 s) so the structured reason usually
@@ -59,6 +65,67 @@ function assertWithinDeadline(tick: number): void {
 if (Number.isSafeInteger(ticks) && ticks > MAX_TICKS) {
   process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "game_argument_invalid", message: `\`ticks\` must be at most ${MAX_TICKS}; the headless runner has no unbounded mode` } })}\n`);
   process.exit(0);
+}
+
+// PR06: `--scenario <inline JSON>` — validate up front so an invalid scenario
+// is a structured argument error, never a run that silently ignores it.
+let scenario: GameTestScenarioV1 | null = null;
+if (scenarioRaw !== undefined) {
+  if (scenarioRaw.length === 0 || scenarioRaw.length > MAX_SCENARIO_JSON) {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "game_argument_invalid", message: `\`scenario\` must be inline JSON of at most ${MAX_SCENARIO_JSON} characters` } })}\n`);
+    process.exit(0);
+  }
+  let parsedScenario: unknown;
+  try {
+    parsedScenario = JSON.parse(scenarioRaw);
+  } catch {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "game_argument_invalid", message: "`scenario` is not valid JSON" } })}\n`);
+    process.exit(0);
+  }
+  const validated = validateGameTestScenarioV1(parsedScenario);
+  if (!validated.ok) {
+    process.stdout.write(`${JSON.stringify({ ok: false, error: { code: "game_argument_invalid", message: `scenario: ${validated.diagnostics.map((item) => item.message).join(" ")}`.slice(0, 300) } })}\n`);
+    process.exit(0);
+  }
+  scenario = validated.value;
+}
+/** Scenario overrides: seed re-seeds the run, maxTicks re-bounds it (both are
+ * validator-capped, so the effective budget stays within MAX_TICKS). */
+const effectiveSeed = scenario?.seed ?? seed;
+const effectiveTicks = scenario?.maxTicks ?? ticks;
+
+/** PR06: evaluate the requested scenario against the run's final telemetry.
+ * Only a normally-completed run loop reaches this — a run killed by the
+ * deadline or an abort throws and exits through the catch block, which never
+ * emits a scenario block, so a dead run can never report `passed`. */
+function scenarioBlock(telemetry: {
+  status: string;
+  outcome: string | null;
+  tick: number;
+  entities: number;
+  hud: Readonly<Record<string, unknown>> | null;
+  counters: Readonly<Record<string, number>>;
+}): Record<string, unknown> | null {
+  if (!scenario) return null;
+  const result = evaluateGameTestScenarioV1(scenario, {
+    outcome: telemetry.outcome,
+    tick: telemetry.tick,
+    entities: telemetry.entities,
+    hud: telemetry.hud,
+    counters: telemetry.counters,
+    finishedWithinBudget: telemetry.status !== "running",
+  });
+  return {
+    scenarioId: result.scenarioId,
+    verdict: result.verdict,
+    ...(result.verdictReason !== undefined ? { verdictReason: result.verdictReason } : {}),
+    assertions: result.assertions.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      status: item.status,
+      ...(item.diagnostic !== undefined ? { diagnostic: item.diagnostic } : {}),
+    })),
+  };
 }
 
 if (incompleteRequest || (!sealedRequest && !legacyRequest) || !Number.isSafeInteger(seed) || !Number.isSafeInteger(ticks) || ticks <= 0) {
@@ -83,7 +150,7 @@ try {
   const snapshot = snapshotPath ? readSnapshot(snapshotPath, expectedSnapshotDigest as string) : null;
   const worldV2 = snapshot ? createSnapshotWorldAPIV2(snapshot) : null;
   const buildIdentity = artifact?.build.buildId ?? "legacy-build";
-  const runId = `run-${buildIdentity.slice(0, 16)}-${seed}`;
+  const runId = `run-${buildIdentity.slice(0, 16)}-${effectiveSeed}`;
   const evidenceId = `evidence-${runId}`;
   const worldIdentity = snapshot ? {
     cityId: snapshot.header.cityId,
@@ -107,14 +174,14 @@ try {
     const access = createGameAccessV1(manifest, world.header().capabilities, grant);
     const host = createCodeGameHostV2(manifest, {
       world,
-      seed,
+      seed: effectiveSeed,
       runId,
       access,
       grant,
     });
     await host.prepare(module.default as GameDefinitionV2);
     await host.start();
-    for (let index = 0; index < ticks && host.status === "running"; index += 1) {
+    for (let index = 0; index < effectiveTicks && host.status === "running"; index += 1) {
       assertWithinDeadline(index);
       host.step();
     }
@@ -135,13 +202,14 @@ try {
         hud: telemetry.hud,
         counters: telemetry.counters,
       },
+      ...(scenario ? { scenario: scenarioBlock(telemetry) } : {}),
     })}\n`);
   } else if (manifest.schemaVersion === 1) {
     const worldSource = worldV2 ? createV1WorldFromV2(worldV2) : createGameTestWorld().source;
-    const host = createCodeGameHostV1(manifest, { world: worldSource, seed, runId });
+    const host = createCodeGameHostV1(manifest, { world: worldSource, seed: effectiveSeed, runId });
     await host.prepare(module.default as GameDefinitionV1);
     host.start();
-    for (let index = 0; index < ticks; index += 1) {
+    for (let index = 0; index < effectiveTicks; index += 1) {
       assertWithinDeadline(index);
       host.step();
     }
@@ -163,6 +231,7 @@ try {
         hud: telemetry.hud,
         counters: telemetry.counters,
       },
+      ...(scenario ? { scenario: scenarioBlock(telemetry) } : {}),
     })}\n`);
   } else {
     throw Object.assign(new Error("The headless host does not support this manifest schema."), { code: "game_manifest_unsupported" });
