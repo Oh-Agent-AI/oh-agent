@@ -38,8 +38,8 @@
 | 07 · Candidate/Release 门禁 | Host 统一证据检查 | ✅ 完成（2026-11-27） | `d4e14d02` | 见 §4.7 |
 | 08 · Automated Visual Playtest | 隔离 Preview 自动试玩 | ✅ 完成（2026-11-28） | `0ab0b7b4` | 见 §4.9 |
 | 09 · Candidate Workspace | 基线隔离 + CAS 接受 | ✅ 完成（2026-11-28） | `f9047a00` | 见 §4.11 |
-| 10 · Code Game Task Adapter | StudioArtifactRef 统一 | 进行中 | — | — |
-| 11 · 有预算的自动修复 | 冻结验收标准 | 未开始 | — | — |
+| 10 · Code Game Task Adapter | StudioArtifactRef 统一 | ✅ 完成（2026-11-28） | `ef498f2b` | 见 §4.12 |
+| 11 · 有预算的自动修复 | 冻结验收标准 | 进行中 | — | — |
 | 12 · Template Registry | 统一模板元数据 | 未开始 | — | — |
 | 13 · Binding Resolver/Migration | 绑定提案与迁移 | 未开始 | — | — |
 | 14 · Gallery/Remix/E2E | 纵向闭环 | 未开始 | — | — |
@@ -194,6 +194,15 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 - **状态机**：`draft|building|testing|awaiting-review|accepted|rejected` 逐候选持久化；build/test 分别置 building/testing；discard 即删树留墓碑（构建/测试/证据在 state/ 下保留）。
 - **检查**：MCP 213（+25）；SDK 87 + typecheck；clippy 干净；真实 hello-city 构建端到端验证 candidate/workspace 两形态密封与 source map 归一化。
 - **残留（如实）**：候选写不共享基线锁（隔离按构造成立，仅 commit 取双锁）；fork 为全量副本（≤64MiB 下可接受，`dist/node_modules/.git` 排除并在提交后重建）；archive 即删除 + 墓碑至 prune；无 operationId 的 fork 崩溃可能留下孤立 draft（仅同 operationId 重试可恢复，否则 discard）；`awaiting-review` 不可撤销；`status/list` 为无锁读（与基线 `workspace_info` 同一致性级）；build/test-against-candidate 在身份管道 + 真实 builder CLI 层验证，MCP→Node 候选构建全路径未在 Rust 测试中执行（与既有基线路径测试惯例一致）。
+
+### 4.12 PR10 实施记录（`ef498f2b`）
+
+- **Rust（`creator_session.rs` +768）**：`task_artifact` 增加 `code-game`（`{workspaceId, expectedRevision: 64-hex 工作区内容摘要, 可选 baseBuildId}`；键数规则 project/city/story 恰 3 键、code-game 3 或 4 键且第 4 键仅 baseBuildId）。`task_check_artifact` code-game 分支：权威源是文件系统而非 projects.sqlite（`workspace.json` 是 PR02 原子落盘的注册表，`read_meta` 每次以 `digest_workspace` 现算整树摘要——与 PR02–09 全链共信的同一 CAS token；`baseBuildId` 必须密封绑定摘要否则 `revision_conflict`）。`task_target_refs` code-game 引用 = 工作区文件引用（`entityKind: code-file`、live 树成员资格、digest 形 revision；preview 台账核对如实跳过——code-preview 是独立窗口，项目场景台账无法核对，scope+revision 仍强制）。**真实工作闸 `verify_code_game_build`**（pub(crate)）：task digest → 候选记录（fork 自该摘要）→ 密封候选构建（仅 `candidate:` 前缀——基线构建带不进新工作）→ 测试记录 verdict passed；各失败面独立错误码（`workspace_build_mismatch`/`creator_candidate_discarded`/`creator_task_test_not_passed`）。execute 为 build/test 判据铸造 host-observed 证据、`proposedChangeSetId=buildId`；submit 按类分派（code-game 交 buildId 替代 previewId）；`confirm_task_save` 对 code-game 诚实分流到候选提交桥；执行器提示携带 workspace/候选绑定与只读工具指引。
+- **TS**：artifact union + `TaskScope` 增加 `code-game`（严格 3/4 键规则镜像宿主 + digest 校验器 + `studioTaskScopeId` 含 workspaceId）；会话历史面对 digest 输出 `expectedRevision: null`（保持线上兼容的 u64 投影）。
+- **Schema**：artifact 以 `artifact_json` 整体存储，无 SQLite 迁移。
+- **测试**：MCP +7（pull 全链路含真实 PR09 候选 fork/编辑/提交、create/plan 的过期摘要拒绝、伪造 targetRef、submit 反例矩阵、push execute FakeExecutor、文件系统权威、baseBuildId 锚定）；UI +1（parse 规则含 5 键/坏 baseBuildId/project 带 baseBuildId 拒绝）。
+- **检查**：MCP 220（+7）、UI 136（+1）、clippy 干净、`git diff --check` 干净。
+- **残留（如实）**：① UI 面板 scope 接线推迟到 PR14（合同 + 控制器已就绪，`CreatorStudioApp.tsx` 与 code-game 会话 scope 未动）；② code-preview 与任务的绑定验证缺口（同上，宿主场景台账看不到 code-preview 窗口）；③ push 执行器无写权限（MCP 不带 `--allow-local-writes`），push execute 仅在候选构建+测试链已存在时成功——生产工作流走 pull 模式；④ 会话历史对 code-game 输出 null 修订号（线上兼容投影）；⑤ 8 个任务 spec 的 `expectedArtifactRevision` 类型放宽为 `["integer","string"]`。
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
