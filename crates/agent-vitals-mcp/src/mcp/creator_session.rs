@@ -15,7 +15,9 @@ use sha2::{Digest, Sha256};
 
 use super::{ToolError, ToolSpec};
 
-const MAX_SESSIONS_PER_AGENT: usize = 4;
+/// open 会话上限按 (agentId, Project, City) 作用域计：同一项目内可自由多开，
+/// 不同项目互不挤占（Studio 各项目共用同一 agentId，全局计数会误伤正常创作）。
+const MAX_SESSIONS_PER_SCOPE: usize = 4;
 const JOB_WAIT_MAX_MS: u64 = 30_000;
 const JOB_WAIT_POLL_MS: u64 = 500;
 const CONNECTION_TTL_MS: u64 = 15_000;
@@ -527,12 +529,13 @@ fn session_open(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
         // 恢复历史会话等于重新占用一个 open 名额：闭会话不计入 open_count，
         // 若这里不补同一道闸，归档/恢复就把会话上限变成了摆设。
         if state != "open" {
-            let open_count: i64 = db.query_row("SELECT COUNT(*) FROM creator_sessions WHERE agent_id=?1 AND state='open'",
-                [agent_id], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-            if open_count as usize >= MAX_SESSIONS_PER_AGENT {
+            let open_count: i64 = db.query_row("SELECT COUNT(*) FROM creator_sessions WHERE agent_id=?1 AND state='open'
+                 AND scope_project_id IS ?2 AND scope_city_id IS ?3",
+                rusqlite::params![agent_id, project_id, city_id], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            if open_count as usize >= MAX_SESSIONS_PER_SCOPE {
                 return Err(ToolError::new("creator_session_limit_exceeded",
-                    format!("Agent already has {open_count} open sessions (max {MAX_SESSIONS_PER_AGENT}); close one before restoring another."))
-                    .with_next(json!({"tool":"creator_session_list","args":{"agentId":agent_id},"note":"归档一个 open 会话后再恢复。"})));
+                    format!("This scope already has {open_count} open sessions (max {MAX_SESSIONS_PER_SCOPE}); close one before restoring another."))
+                    .with_next(json!({"tool":"creator_session_list","args":{"agentId":agent_id,"projectId":project_id,"cityId":city_id},"note":"归档本作用域的一个 open 会话后再恢复。"})));
             }
         }
         db.execute("UPDATE creator_sessions SET state='open',updated_at_ms=?1 WHERE session_id=?2", rusqlite::params![now, session_id])
@@ -545,12 +548,13 @@ fn session_open(data_home: &Path, args: &Value) -> Result<Value, ToolError> {
             session_id
         }
         None => {
-            let open_count: i64 = db.query_row("SELECT COUNT(*) FROM creator_sessions WHERE agent_id=?1 AND state='open'",
-                [agent_id], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
-            if open_count as usize >= MAX_SESSIONS_PER_AGENT {
+            let open_count: i64 = db.query_row("SELECT COUNT(*) FROM creator_sessions WHERE agent_id=?1 AND state='open'
+                 AND scope_project_id IS ?2 AND scope_city_id IS ?3",
+                rusqlite::params![agent_id, project_id, city_id], |row| row.get(0)).map_err(|error| ToolError::new("storage_unavailable", format!("{error}")))?;
+            if open_count as usize >= MAX_SESSIONS_PER_SCOPE {
                 return Err(ToolError::new("creator_session_limit_exceeded",
-                    format!("Agent already has {open_count} open sessions (max {MAX_SESSIONS_PER_AGENT}); close one with creator_session_close first."))
-                    .with_next(json!({"tool":"creator_session_status","args":{},"note":"列出 open 会话后选择关闭。"})));
+                    format!("This scope already has {open_count} open sessions (max {MAX_SESSIONS_PER_SCOPE}); close one with creator_session_close first."))
+                    .with_next(json!({"tool":"creator_session_status","args":{},"note":"列出本作用域的 open 会话后选择关闭。"})));
             }
             let session_id = new_id("csession-");
             db.execute("INSERT INTO creator_sessions(session_id,agent_id,scope_project_id,scope_city_id,state,created_at_ms,updated_at_ms) VALUES(?1,?2,?3,?4,'open',?5,?5)",
@@ -2068,13 +2072,14 @@ mod tests {
         // 不同 agentId：新会话。
         let other = session_open(&home, &json!({"agentId":"agent-b"})).unwrap();
         assert_ne!(other["data"]["sessionId"], json!(session_id));
-        // 上限按 agentId 计：不同 scope 才算新会话——相同 scope 的 open 是幂等重放，
-        // 不占新名额。agent-c 以 4 个不同项目开满上限后，第 5 个不同 scope 拒绝。
+        // 上限按 (agentId, Project, City) 作用域计：相同 scope 的 open 是幂等重放，
+        // 不占新名额。agent-c 在 project-0 内开满 4 个后第 5 个拒绝，其他项目不受影响。
         for index in 0..4 {
-            let _ = session_open(&home, &json!({"agentId":"agent-c","projectId":format!("project-{index}")})).unwrap();
+            let _ = session_open(&home, &json!({"agentId":"agent-c","projectId":"project-0","createNew":true,"label":format!("会话{index}")})).unwrap();
         }
-        assert_eq!(session_open(&home, &json!({"agentId":"agent-c","projectId":"project-5"})).unwrap_err().code,
+        assert_eq!(session_open(&home, &json!({"agentId":"agent-c","projectId":"project-0","createNew":true,"label":"第5个"})).unwrap_err().code,
             "creator_session_limit_exceeded");
+        let _ = session_open(&home, &json!({"agentId":"agent-c","projectId":"project-5"})).unwrap();
         let closed = session_close(&home, &json!({"sessionId":session_id})).unwrap();
         assert_eq!(closed["data"]["state"], json!("closed"));
         // 关闭后再 status：会话仍在（审计窗口），state=closed。
@@ -2144,23 +2149,27 @@ mod tests {
 
     /// 恢复历史会话等于重新占用一个 open 名额：闭会话不计入 open_count，
     /// 若恢复路径不补同一道闸，归档/恢复就把会话上限变成了摆设。
+    /// 上限按 (agentId, Project, City) 作用域计：其他项目的会话不占本作用域名额。
     #[test]
     fn restoring_a_closed_session_still_respects_the_open_session_cap() {
         let home = temp_home();
-        let ids: Vec<String> = (0..MAX_SESSIONS_PER_AGENT).map(|index|
-            session_open(&home, &json!({"agentId":"cap","projectId":format!("p{index}")})).unwrap()["data"]["sessionId"]
+        let ids: Vec<String> = (0..MAX_SESSIONS_PER_SCOPE).map(|index|
+            session_open(&home, &json!({"agentId":"cap","projectId":"p0","createNew":true,"label":format!("会话{index}")})).unwrap()["data"]["sessionId"]
                 .as_str().unwrap().to_owned()).collect();
         session_close(&home, &json!({"sessionId":ids[0]})).unwrap();
         session_close(&home, &json!({"sessionId":ids[1]})).unwrap();
-        session_open(&home, &json!({"agentId":"cap","projectId":"p4"})).unwrap();
-        session_open(&home, &json!({"agentId":"cap","projectId":"p5"})).unwrap();
+        // 本作用域只剩 2 个 open；补满 4 个后，恢复第 5 个名额被拒。
+        session_open(&home, &json!({"agentId":"cap","projectId":"p0","createNew":true,"label":"会话4"})).unwrap();
+        session_open(&home, &json!({"agentId":"cap","projectId":"p0","createNew":true,"label":"会话5"})).unwrap();
+        // 其他项目的会话不挤占 p0 的名额。
+        let _ = session_open(&home, &json!({"agentId":"cap","projectId":"p9"})).unwrap();
         assert_eq!(session_open(&home, &json!({"agentId":"cap","projectId":"p0","sessionId":ids[0]})).unwrap_err().code,
             "creator_session_limit_exceeded");
         session_close(&home, &json!({"sessionId":ids[2]})).unwrap();
         let restored = session_open(&home, &json!({"agentId":"cap","projectId":"p0","sessionId":ids[0]})).unwrap();
         assert_eq!(restored["data"]["state"], json!("open"));
         // 已 open 的会话按 sessionId 重进是幂等重放，不占新名额。
-        let resumed = session_open(&home, &json!({"agentId":"cap","projectId":"p3","sessionId":ids[3]})).unwrap();
+        let resumed = session_open(&home, &json!({"agentId":"cap","projectId":"p0","sessionId":ids[3]})).unwrap();
         assert_eq!(resumed["data"]["sessionId"], json!(ids[3]));
         std::fs::remove_dir_all(home).unwrap();
     }
