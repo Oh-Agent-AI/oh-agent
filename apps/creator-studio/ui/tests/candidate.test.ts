@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canAcceptCandidate, candidateEvidenceTrust, parseProjectCandidate } from "../src/contracts/candidate.ts";
+import { canAcceptCandidate, canReleaseCandidate, candidateEvidenceTrust, parseProjectCandidate } from "../src/contracts/candidate.ts";
 import { workspaceNextStep } from "../src/features/preview/workspaceNextStep.ts";
 
 const tested = {
@@ -20,6 +20,19 @@ test("candidate acceptance requires completed evidence with a recognized trust l
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, latestRun: { ...tested.latestRun, evidence: { outcome: "failure", snapshotDigest: `sha256:${"a".repeat(64)}` } } })), false);
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, latestRun: { ...tested.latestRun, evidence: { outcome: "success", snapshotDigest: `sha256:${"b".repeat(64)}` } } })), false);
   assert.equal(canAcceptCandidate(parseProjectCandidate({ ...tested, status: "accepted", acceptedReleaseId: "release-formal" })), false);
+});
+
+test("PR07 evidence gates: hostDisagreement blocks accept and release needs host-verified", () => {
+  // city-client-reported 仍过本地接受闸（既有 fixture 不变），但不够 Release 强闸。
+  const candidate = parseProjectCandidate(tested)!;
+  assert.equal(canReleaseCandidate(candidate), false);
+  assert.equal(canReleaseCandidate(parseProjectCandidate({ ...tested, latestRun: { ...tested.latestRun, evidenceSource: "host-verified" } })), true);
+  // 宿主复算与客户端回报相左：accept 与 release 都必须拒绝，信任文案如实呈现。
+  const disagreed = parseProjectCandidate({ ...tested,
+    latestRun: { ...tested.latestRun, evidence: { ...tested.latestRun.evidence, hostDisagreement: { hostOutcome: "failure", hostCounters: { next: 1 } } } } })!;
+  assert.equal(canAcceptCandidate(disagreed), false);
+  assert.equal(canReleaseCandidate(disagreed), false);
+  assert.equal(candidateEvidenceTrust(disagreed), "宿主复算与客户端回报不一致（hostDisagreement），不能接受或发布");
 });
 
 test("candidate parsing is bounded and fails closed on malformed artifacts", () => {

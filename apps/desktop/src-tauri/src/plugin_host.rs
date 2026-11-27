@@ -2737,6 +2737,14 @@ mod tests {
             "bindings": {"points": ["cp-1", "cp-2", "cp-3"]}, "operationId": "op-bind-1"})).unwrap();
         assert_eq!(bound["revision"], 1, "{bound}");
         assert_eq!(bound["coverage"]["bound"], 3, "{bound}");
+        // PR07 统一证据门禁：headless 臂的发布与 Studio 走同一道强闸、没有特例——
+        // 测试先按正规候选流程留下宿主复核一致的试玩证据，再走 creator.project.publish。
+        let candidate = crate::creator_projects::create_project_candidate(&home, &project_id, 1).unwrap();
+        let evidence = json!({"evidenceSource":"host-verified","outcome":"success","snapshotDigest":candidate["contentDigest"]});
+        let db = crate::creator_store::database(&home).unwrap();
+        db.execute("INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,status,active_slot,created_at_ms,expires_at_ms,finished_at_ms,evidence_json,return_consumed)
+            VALUES('playtest-headless-gate',?1,?2,1,'studio-seed','completed',NULL,1,2,3,?3,1)",
+            rusqlite::params![candidate["candidateId"].as_str().unwrap(), project_id.as_str(), evidence.to_string()]).unwrap();
         let published = answer_headless_call(&home, "creator.project.publish",
             &json!({"projectId": project_id, "expectedRevision": 1})).unwrap();
         assert!(published["releaseId"].as_str().is_some(), "{published}");

@@ -32,7 +32,7 @@ pub fn specs() -> Vec<ToolSpec> {
     vec![
         spec(
             "creator_code_publish",
-            "Package one immutable Code Game build into a self-contained local experience (bundle + declared assets + permissions + world binding + per-file digests + contentDigest). Publishing is not installation and is not a trust claim: it never executes code and never enables distribution. `permissionsAccepted` must be true. Requires `--allow-local-writes`.",
+            "Package one immutable Code Game build into a self-contained local experience (bundle + declared assets + permissions + world binding + per-file digests + contentDigest). Publishing is not installation and is not a trust claim: it never executes code and never enables distribution. Requires a passing headless `creator_code_test` record for the exact `buildId` whose workspace revision still matches the build. `permissionsAccepted` must be true. Requires `--allow-local-writes`.",
             json!({
                 "workspaceId":{"type":"string","minLength":20,"maxLength":32},
                 "buildId":{"type":"string","minLength":64,"maxLength":64,"pattern":"^[0-9a-f]{64}$"},
@@ -108,6 +108,25 @@ fn publish(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let directory = workspace_dir(data_home, &workspace_id)?;
     let meta = read_meta(&directory)?;
     let game_revision = build_workspace_revision(data_home, &build_id, &meta)?;
+    // PR07 统一证据门禁：发布必须有同一 buildId 的无头测试记录（`creator_code_test`
+    // 落盘 `state/creator/code-games/tests/<buildId>.json`），`ok=true` 且记录的
+    // `workspaceRevision` 与本次重算的构建身份一致。缺失/失败
+    // → `creator_code_test_evidence_required`；构建身份对不上（测后又改）→
+    // `creator_code_test_evidence_stale`。先测试、后发布。
+    let tests_dir = data_home.join("state/creator/code-games").join("tests");
+    let test_record = read_json(&tests_dir.join(format!("{build_id}.json"))).ok_or_else(|| {
+        ToolError::new("creator_code_test_evidence_required",
+            "No headless test record for this buildId. Run `creator_code_test` for this exact build first, then publish.")
+    })?;
+    if test_record.get("buildId").and_then(Value::as_str) != Some(build_id.as_str())
+        || test_record.get("ok").and_then(Value::as_bool) != Some(true) {
+        return Err(ToolError::new("creator_code_test_evidence_required",
+            "The headless test record for this buildId is missing or did not pass. Run `creator_code_test` and publish only after it succeeds."));
+    }
+    if test_record.get("workspaceRevision").and_then(Value::as_str) != Some(game_revision.as_str()) {
+        return Err(ToolError::new("creator_code_test_evidence_stale",
+            "The test record's workspaceRevision no longer matches this build's workspace revision; the workspace changed after testing. Run `creator_code_test` again, then publish."));
+    }
     let build_dir = data_home.join("code-games").join("builds").join(&build_id);
     let game = read_json(&build_dir.join("manifest.json"))
         .ok_or_else(|| ToolError::new("data_unavailable", "The sealed build manifest is unavailable."))?;
@@ -240,6 +259,10 @@ fn list(data_home: &Path) -> Result<Value, ToolError> {
 }
 
 fn install(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
+    // PR07 证据门禁说明：install 只登记 `creator_code_publish` 产出的既有包
+    // （code-games/experiences 下按 id+version 取 manifest 并逐字节复核），没有
+    // 从构建直装的总闸——发布侧的 creator_code_test 证据门禁无法经 install 绕过，
+    // 因此这里不设冗余门禁；完整性由 contentDigest/per-file digest 强制。
     let experience_id = required_str(args, "experienceId", 128)?;
     let version = checked_version(required_str(args, "version", MAX_VERSION)?.as_str())?;
     if !is_safe_identifier(&experience_id) {
@@ -538,12 +561,37 @@ mod tests {
             "sourceRevision":format!("workspace:gws-0000000000000000:{revision}"),
         })).unwrap();
 
+        // PR07 证据门禁：没有同 buildId 的 creator_code_test 记录不能发布；记录
+        // 失败（ok=false）同样拒绝；workspaceRevision 与构建身份不符按过期拒绝；
+        // 通过的记录放行发布。
+        let publish_args = json!({
+            "workspaceId": "gws-0000000000000000", "buildId": build_id, "permissionsAccepted": true,
+        });
+        let untested = run("creator_code_publish", &publish_args, &home, true).unwrap_err();
+        assert_eq!(untested.code, "creator_code_test_evidence_required");
+        let tests = home.join("state/creator/code-games").join("tests");
+        std::fs::create_dir_all(&tests).unwrap();
+        write_json(&tests.join(format!("{build_id}.json")), &json!({
+            "buildId": build_id, "workspaceRevision": revision, "ok": false, "seed": 7, "ticks": 10,
+            "source": {"synthetic": true}, "atMs": 1,
+        })).unwrap();
+        let failing = run("creator_code_publish", &publish_args, &home, true).unwrap_err();
+        assert_eq!(failing.code, "creator_code_test_evidence_required");
+        write_json(&tests.join(format!("{build_id}.json")), &json!({
+            "buildId": build_id, "workspaceRevision": "c".repeat(64), "ok": true, "seed": 7, "ticks": 10,
+            "source": {"synthetic": true}, "atMs": 1,
+        })).unwrap();
+        let stale = run("creator_code_publish", &publish_args, &home, true).unwrap_err();
+        assert_eq!(stale.code, "creator_code_test_evidence_stale");
+        write_json(&tests.join(format!("{build_id}.json")), &json!({
+            "buildId": build_id, "workspaceRevision": revision, "ok": true, "seed": 7, "ticks": 10,
+            "source": {"synthetic": true}, "atMs": 1,
+        })).unwrap();
+
         // 发布：必须显式接受权限，且不落库。
         let publish_denied = run("creator_code_publish", &json!({"workspaceId": "gws-0000000000000000", "buildId": build_id}), &home, true).unwrap_err();
         assert_eq!(publish_denied.code, "invalid_argument");
-        let published = run("creator_code_publish", &json!({
-            "workspaceId": "gws-0000000000000000", "buildId": build_id, "permissionsAccepted": true,
-        }), &home, true).unwrap();
+        let published = run("creator_code_publish", &publish_args, &home, true).unwrap();
         assert_eq!(published["data"]["version"], "1.2.3");
         assert_eq!(published["data"]["installed"], false);
         let digest = published["data"]["contentDigest"].as_str().unwrap().to_string();

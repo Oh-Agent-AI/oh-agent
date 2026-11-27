@@ -1,4 +1,4 @@
-import { canAcceptCandidate, candidateEvidenceTrust, type ProjectCandidate } from "../../contracts/candidate";
+import { canAcceptCandidate, canReleaseCandidate, candidateEvidenceTrust, type ProjectCandidate } from "../../contracts/candidate";
 
 const statusLabel = (candidate: ProjectCandidate): string => ({
   created: "已创建，待真实试玩", testing: "真实试玩进行中", tested: "已有完成证据，待人工接受",
@@ -44,7 +44,8 @@ export function CandidatePanel(props: Readonly<{
       </details>
     </>}
     <details className="candidate-release-actions"><summary>其他发布操作</summary>
-      <div className="actions"><button className="secondary" disabled={!publishedReleaseId || busy || browserPreview} onClick={onPlaytestRelease}>试玩正式版</button><button className="secondary" disabled={unavailable} onClick={onDirectPublish}>直接发布 Release（旧路径）</button></div>
+      <div className="actions"><button className="secondary" disabled={!publishedReleaseId || busy || browserPreview} onClick={onPlaytestRelease}>试玩正式版</button><button className="secondary" disabled={unavailable || !canReleaseCandidate(candidate)} onClick={onDirectPublish}>直接发布 Release（旧路径）</button></div>
+      {!canReleaseCandidate(candidate) && <p className="muted">直接发布与接受同一道宿主证据门禁：需要试玩证据一致且 Host 复核一致（host-verified）；请先走 Candidate 试玩并由宿主复核后接受发布。</p>}
     </details>
   </section>;
 }

@@ -53,13 +53,25 @@ export function parseProjectCandidate(value: unknown): ProjectCandidate | null {
 export function canAcceptCandidate(candidate: ProjectCandidate | null): candidate is ProjectCandidate {
   if (candidate === null || candidate.status !== "tested" || candidate.acceptedReleaseId !== null
     || candidate.latestRun?.status !== "completed" || !candidate.latestRun.evidenceSource) return false;
-  const evidence = candidate.latestRun.evidence;
+  const evidence = candidate.latestRun.evidence as Record<string, unknown> | null;
+  // PR07 统一证据门禁：宿主复算与客户端回报相左（hostDisagreement）的证据不能被接受。
   return !!evidence && typeof evidence === "object" && !Array.isArray(evidence)
-    && (evidence as Record<string, unknown>).outcome === "success"
-    && (evidence as Record<string, unknown>).snapshotDigest === candidate.contentDigest;
+    && evidence.outcome === "success" && evidence.snapshotDigest === candidate.contentDigest
+    && !evidence.hostDisagreement;
+}
+
+// PR07 Release 强闸（与宿主 publish_project_release 同构）：直接发布需要宿主复核
+// 一致的 host-verified 证据；accept 仍容忍 city-client-reported（本地接受闸）。
+export function canReleaseCandidate(candidate: ProjectCandidate | null): candidate is ProjectCandidate {
+  return canAcceptCandidate(candidate) && candidate?.latestRun?.evidenceSource === "host-verified";
 }
 
 export function candidateEvidenceTrust(candidate: ProjectCandidate | null): string {
+  const evidence = candidate?.latestRun?.evidence;
+  if (evidence && typeof evidence === "object" && !Array.isArray(evidence)
+    && (evidence as Record<string, unknown>).hostDisagreement) {
+    return "宿主复算与客户端回报不一致（hostDisagreement），不能接受或发布";
+  }
   const source = candidate?.latestRun?.evidenceSource;
   return source === "host-verified" ? "Host 已用输入 Trace 复算并与回报一致" : source === "city-client-reported" ? "City 客户端回报（非 Host 验证）" : "暂无真实运行证据";
 }

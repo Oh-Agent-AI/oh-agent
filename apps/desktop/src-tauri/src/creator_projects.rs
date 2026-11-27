@@ -853,16 +853,51 @@ fn insert_project_release(tx: &rusqlite::Transaction<'_>, frozen: &FrozenProject
         "gameType":frozen.game_type,"vehicleId":frozen.snapshot["vehicleId"],"runtimeContractVersion":1}))
 }
 
-/// Direct Release creation remains available for compatibility. The Candidate flow
-/// uses the same frozen snapshot but does not call this path until human acceptance.
+/// Direct Release creation remains available for compatibility, but under the same
+/// unified evidence bar as candidate acceptance (PR07): a newly created Release
+/// here requires the host-verified candidate evidence gate. Re-publishing an
+/// already published revision stays idempotent (its Release passed a gate when it
+/// was created), and a same-revision digest conflict still reports the existing
+/// creator_release_conflict. The Candidate flow uses the same frozen snapshot but
+/// does not call this path until human acceptance.
 pub fn publish_project_release(home: &Path, project_id: &str, expected_revision: u64) -> Result<Value, &'static str> {
     if !valid_id(project_id) { return Err("creator_request_invalid"); }
     let mut db = database(home)?;
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate).map_err(|_| "creator_store_unavailable")?;
     let frozen = freeze_project_snapshot(&tx, home, project_id, expected_revision)?;
+    let existing: Option<String> = tx.query_row("SELECT snapshot_digest FROM creator_releases WHERE project_id=?1 AND revision=?2",
+        params![project_id,frozen.revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?;
+    if existing.is_none() {
+        require_release_test_evidence(&tx, &frozen)?;
+    }
     let result = insert_project_release(&tx, &frozen)?;
     tx.commit().map_err(|_| "creator_store_unavailable")?;
     Ok(result)
+}
+
+/// PR07 统一证据门禁（Release 入口强闸）：直接发布不再绕过 Candidate 试玩证据。
+/// 合格证据 = 同一 (project, revision) 的候选，其最新一次 completed 试玩的落盘
+/// 证据与当前冻结快照一致（snapshotDigest 相同、outcome=success），且带宿主复算
+/// 注记 `evidenceSource=host-verified`、无 `hostDisagreement`（宿主复算与客户端
+/// 相左的证据不可发布）。人工评审记录（PR06/PR09）落地前不接受其他证据形态。
+fn require_release_test_evidence(tx: &rusqlite::Transaction<'_>, frozen: &FrozenProjectSnapshot) -> Result<(), &'static str> {
+    let project_id = frozen.snapshot["projectId"].as_str().ok_or("creator_release_invalid")?;
+    let candidate: Option<(String, String)> = tx.query_row("SELECT candidate_id,snapshot_digest FROM creator_candidates WHERE project_id=?1 AND revision=?2",
+        params![project_id,frozen.revision], |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?;
+    let Some((candidate_id, content_digest)) = candidate.filter(|(_, digest)| digest == &frozen.snapshot_digest) else {
+        return Err("creator_release_evidence_required");
+    };
+    let latest = tx.query_row("SELECT status,evidence_json FROM creator_playtest_runs WHERE release_id=?1 ORDER BY created_at_ms DESC,run_id ASC LIMIT 1",
+        [&candidate_id], |row| Ok((row.get::<_,String>(0)?,row.get::<_,Option<String>>(1)?))).optional().map_err(|_| "creator_store_unavailable")?
+        .ok_or("creator_release_evidence_required")?;
+    if latest.0 != "completed" { return Err("creator_release_evidence_required"); }
+    let evidence_raw = latest.1.ok_or("creator_release_evidence_required")?;
+    let evidence: Value = serde_json::from_str(&evidence_raw).map_err(|_| "creator_release_evidence_required")?;
+    if evidence["snapshotDigest"].as_str() != Some(content_digest.as_str()) || evidence["outcome"].as_str() != Some("success")
+        || evidence["evidenceSource"].as_str() != Some("host-verified") || evidence.get("hostDisagreement").is_some() {
+        return Err("creator_release_evidence_required");
+    }
+    Ok(())
 }
 
 fn project_candidate_summary(db: &rusqlite::Connection, project_id: &str, revision: u64) -> Result<Value, &'static str> {
@@ -948,6 +983,10 @@ pub fn accept_project_candidate(home: &Path, candidate_id: &str) -> Result<Value
     if latest.0 != "completed" { return Err("creator_candidate_test_required"); }
     let evidence_raw = latest.1.ok_or("creator_candidate_test_required")?;
     let evidence: Value = serde_json::from_str(&evidence_raw).map_err(|_| "creator_candidate_test_required")?;
+    // PR07 统一证据门禁：宿主复算与客户端回报相左的证据不可接受。结构校验在
+    // finish 已通过，落盘 hostDisagreement 即信任矛盾（信任链在本地接受这一层
+    // 仍容忍 city-client-reported，但绝不容忍「宿主复算不一致」），要求重新试玩。
+    if evidence.get("hostDisagreement").is_some() { return Err("creator_candidate_host_disagreement"); }
     if evidence["snapshotDigest"].as_str() != Some(&content_digest) || evidence["outcome"].as_str() != Some("success") {
         return Err("creator_candidate_test_required");
     }
@@ -2768,6 +2807,22 @@ pub fn commit_preview_as(home: &Path, owner: &str, instance: &str, project_id: &
     Ok(result)
 }
 
+/// PR07 直接发布强闸的测试种子：为 (project, revision) 建候选，并按宿主复算注记
+/// 的落盘形状直写一条完成证据（evidenceSource=host-verified；与既有 verified 分支
+/// 测试同一直写 evidence_json 的惯例）。return_consumed=1、created_at_ms=1：不进
+/// return_context 面，历史排序恒在最旧，不干扰各测试自己的真实运行断言。
+#[cfg(test)]
+fn seed_host_verified_candidate(home: &Path, project_id: &str, revision: u64) -> String {
+    let candidate = create_project_candidate(home, project_id, revision).unwrap();
+    let candidate_id = candidate["candidateId"].as_str().unwrap().to_owned();
+    let evidence = json!({"evidenceSource":"host-verified","outcome":"success","snapshotDigest":candidate["contentDigest"]});
+    let db = database(home).unwrap();
+    db.execute("INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,status,active_slot,created_at_ms,expires_at_ms,finished_at_ms,evidence_json,return_consumed)
+        VALUES(?1,?2,?3,?4,'studio-seed','completed',NULL,1,2,3,?5,1)",
+        params![format!("playtest-{}", candidate_id), candidate_id, project_id, revision, evidence.to_string()]).unwrap();
+    candidate_id
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2951,6 +3006,7 @@ mod tests {
             "entryAnchorId":"road-spawn:a","bindings":{"points":["road-checkpoint:ab","road-checkpoint:bc","road-checkpoint:cd"]},"parameterOverrides":{"timeLimitTicks":2400}});
         let mount_preview = preview_scene_operations(&home, "studio-instance", project_id, 2, &json!([{"op":"mount.bind","mount":mount}])).unwrap();
         commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", project_id, mount_preview["previewId"].as_str().unwrap(), 2, "bind-model-release").unwrap();
+        seed_host_verified_candidate(&home, &project_id, 3);
         let release = publish_project_release(&home, project_id, 3).unwrap();
         let release_read = read_city_release(&home, release["releaseId"].as_str().unwrap(), "city-layout-v1-test", "world-rev-test").unwrap();
         assert_eq!(release_read["scene"]["objects"].as_array().unwrap().len(), 1);
@@ -3029,6 +3085,7 @@ mod tests {
         assert_eq!(before["revision"], revision);
         assert_eq!(before["status"], "unpublished");
         assert!(before["releaseId"].is_null());
+        seed_host_verified_candidate(&home, &project_id, revision);
         let published = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.publish",
             &json!({"projectId":project_id,"expectedRevision":revision})).unwrap();
         let after = read_project_publication(&home, &project_id, None).unwrap();
@@ -3126,6 +3183,44 @@ mod tests {
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.candidate.accept",
             &json!({"candidateId":candidate_id})).unwrap_err(), "creator_candidate_test_required");
         assert_eq!(read_project_publication(&home, &project_id, None).unwrap()["status"], "unpublished");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    /// PR07 统一证据门禁：accept 拒绝宿主复算相左的证据（hostDisagreement）；直接
+    /// 发布是强闸——只有 host-verified 且一致的候选证据能新建 Release，
+    /// city-client-reported 只够本地接受、不够发布；门禁不挡候选/草稿持久化。
+    #[test]
+    fn evidence_gates_block_disagreement_and_require_host_verification_for_release() {
+        let home = home();
+        let (project_id, revision) = publishable_project(&home);
+        let candidate = create_project_candidate(&home, &project_id, revision).unwrap();
+        let candidate_id = candidate["candidateId"].as_str().unwrap().to_owned();
+        // 宿主复算与客户端相左的落盘形态（host_annotate_evidence 的 disagreement 分支）。
+        let disagreement = json!({"outcome":"success","snapshotDigest":candidate["contentDigest"],
+            "evidenceSource":"city-client-reported","hostDisagreement":{"hostOutcome":"failure","hostCounters":{"next":1}}});
+        let db = database(&home).unwrap();
+        db.execute("INSERT INTO creator_playtest_runs(run_id,release_id,project_id,revision,studio_instance_id,status,active_slot,created_at_ms,expires_at_ms,finished_at_ms,evidence_json,return_consumed)
+            VALUES('playtest-disagreement',?1,?2,?3,'studio-gate','completed',NULL,1,2,3,?4,1)",
+            params![candidate_id.as_str(), project_id, revision, disagreement.to_string()]).unwrap();
+        assert_eq!(accept_project_candidate(&home, &candidate_id).unwrap_err(), "creator_candidate_host_disagreement");
+        assert_eq!(publish_project_release(&home, &project_id, revision).unwrap_err(), "creator_release_evidence_required");
+        // 门禁不挡候选持久化：候选仍可幂等重建、照常读取。
+        assert_eq!(create_project_candidate(&home, &project_id, revision).unwrap()["candidateId"].as_str(), Some(candidate_id.as_str()));
+        // 一致但只是 client-reported：本地接受过闸（接受闸不变），不触发相左拒绝。
+        let client_reported = json!({"outcome":"success","snapshotDigest":candidate["contentDigest"],"evidenceSource":"city-client-reported"});
+        db.execute("UPDATE creator_playtest_runs SET evidence_json=?1 WHERE run_id='playtest-disagreement'", params![client_reported.to_string()]).unwrap();
+        let accepted = accept_project_candidate(&home, &candidate_id).unwrap();
+        assert_eq!(accepted["evidenceSource"], "city-client-reported");
+        // 接受后该修订已有 Release：直接发布幂等返回同一条（不重过闸）。
+        assert_eq!(publish_project_release(&home, &project_id, revision).unwrap()["releaseId"], accepted["releaseId"]);
+        // 强闸只挡新建：新修订没有 host-verified 候选证据时直接发布必须拒绝。
+        let skin_preview = preview_scene_operations(&home, "studio-instance", &project_id, revision,
+            &json!([{"op":"skin.select","skinId":"desert-evening"}])).unwrap();
+        commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id,
+            skin_preview["previewId"].as_str().unwrap(), revision, "gate-next-revision").unwrap();
+        assert_eq!(publish_project_release(&home, &project_id, revision + 1).unwrap_err(), "creator_release_evidence_required");
+        seed_host_verified_candidate(&home, &project_id, revision + 1);
+        assert_eq!(publish_project_release(&home, &project_id, revision + 1).unwrap()["status"], "published");
         let _ = std::fs::remove_dir_all(home);
     }
 
@@ -3415,6 +3510,7 @@ for line in sys.stdin:
         assert!(list_city_releases(&home, "city-layout-v1-test", "world-rev-test", 8).unwrap()["releases"].as_array().unwrap().is_empty());
         assert_eq!(publish_project_release(&home, &project_id, 0).unwrap_err(), "revision_conflict");
 
+        seed_host_verified_candidate(&home, &project_id, revision);
         let first = publish_project_release(&home, &project_id, revision).unwrap();
         let first_id = first["releaseId"].as_str().unwrap().to_owned();
         assert_eq!(publish_project_release(&home, &project_id, revision).unwrap(), first);
@@ -3443,6 +3539,7 @@ for line in sys.stdin:
             &json!([{"op":"skin.select","skinId":"desert-evening"}])).unwrap();
         commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance-2", &project_id,
             skin_preview["previewId"].as_str().unwrap(), revision, "revise-after-release").unwrap();
+        seed_host_verified_candidate(&home, &project_id, revision + 1);
         let second = publish_project_release(&home, &project_id, revision + 1).unwrap();
         assert_ne!(second["releaseId"], first["releaseId"]);
         let second_read = read_city_release(&home, second["releaseId"].as_str().unwrap(), "city-layout-v1-test", "world-rev-test").unwrap();
@@ -3459,6 +3556,7 @@ for line in sys.stdin:
     fn playtest_start_result_cancel_reach_unique_terminal_states() {
         let home = home();
         let (project_id, revision) = publishable_project(&home);
+        seed_host_verified_candidate(&home, &project_id, revision);
         let published = publish_project_release(&home, &project_id, revision).unwrap();
         let release_id = published["releaseId"].as_str().unwrap().to_owned();
         // 归属不符直接拒绝，且不产生 run
@@ -3768,6 +3866,7 @@ for line in sys.stdin:
     fn playtest_handoff_is_release_pinned_city_bound_and_returns_once() {
         let home = home();
         let (project_id, revision) = publishable_project(&home);
+        seed_host_verified_candidate(&home, &project_id, revision);
         let published = publish_project_release(&home, &project_id, revision).unwrap();
         let release_id = published["releaseId"].as_str().unwrap();
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", "creator.project.playtest.return_context", &json!({})).unwrap(), Value::Null);
@@ -3812,9 +3911,11 @@ for line in sys.stdin:
         assert_eq!(returned, json!({"runId":run_id,"projectId":project_id,"revision":revision,"status":"completed","evidence":evidence,"failureCode":null}));
         assert_eq!(dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-resumed", "creator.project.playtest.return_context", &json!({})).unwrap(), Value::Null);
         let history = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-resumed", "creator.project.playtest.history", &json!({"projectId":project_id,"limit":8})).unwrap();
-        assert_eq!(history["runs"].as_array().unwrap().len(), 1);
+        // PR07：直接发布的强闸种子候选也在同一项目下，历史共两条；种子恒排最旧。
+        assert_eq!(history["runs"].as_array().unwrap().len(), 2);
         assert_eq!(history["runs"][0]["evidenceSource"], "city-client-reported");
         assert_eq!(history["runs"][0]["evidence"], evidence);
+        assert_eq!(history["runs"][1]["evidenceSource"], "host-verified");
         let retry = dispatch_as(&home, LOCAL_CREATOR_OWNER, "studio-retry", "creator.project.playtest.start", &json!({"releaseId":release_id})).unwrap();
         let retry_id = retry["runId"].as_str().unwrap();
         dispatch_city_runtime(&home, "city-retry", "city.creator.playtest.claim", &json!({})).unwrap();
@@ -4149,6 +4250,7 @@ for line in sys.stdin:
             "entryAnchorId":"road-spawn:a","bindings":{"points":["road-checkpoint:ab","road-checkpoint:bc","road-checkpoint:cd"]},"parameterOverrides":{"timeLimitTicks":2400}});
         let preview = preview_scene_operations(&home, "studio-instance", &project_id, 0, &json!([{"op":"mount.bind","mount":mount}])).unwrap();
         commit_preview_as(&home, LOCAL_CREATOR_OWNER, "studio-instance", &project_id, preview["previewId"].as_str().unwrap(), 0, "city-release-mount").unwrap();
+        seed_host_verified_candidate(&home, &project_id, 1);
         let release = publish_project_release(&home, &project_id, 1).unwrap();
         let release_id = release["releaseId"].as_str().unwrap();
         let started = crate::creator_playtest::start_playtest(&home, "studio-instance", release_id, Some(&project_id), Some(1)).unwrap();
@@ -4837,6 +4939,7 @@ mod flight_release_tests {
         document["vehicleId"] = json!("vehicle-release");
         let db = database(&home).unwrap();
         db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        seed_host_verified_candidate(&home, project_id, 0);
         let published = publish_project_release(&home, project_id, 0).unwrap();
         assert_eq!(published["gameType"], "flight");
         assert_eq!(published["vehicleId"], "vehicle-release");
@@ -4898,6 +5001,7 @@ mod flight_pipeline_tests {
         let db = database(&home).unwrap();
         db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
         // 3) 发布 + 试玩启动。
+        seed_host_verified_candidate(&home, project_id, 0);
         let release = publish_project_release(&home, project_id, 0).unwrap();
         assert_eq!(release["gameType"], "flight");
         assert_eq!(release["vehicleId"], "vehicle-v3");
@@ -4943,6 +5047,7 @@ mod flight_pipeline_tests {
         document["mounts"] = json!([mount]);
         let db = database(&home).unwrap();
         db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        seed_host_verified_candidate(&home, project_id, 0);
         let release = publish_project_release(&home, project_id, 0).unwrap();
         assert_eq!(release["gameType"], "flight");
         assert_eq!(release["vehicleId"], "vehicle-pipeline");
@@ -4987,6 +5092,7 @@ mod city_sdk_v3_inspect_tests {
         document["mounts"] = json!([mount]);
         let db = database(home).unwrap();
         db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        seed_host_verified_candidate(home, &project_id, 0);
         let release = publish_project_release(home, &project_id, 0).unwrap();
         (project_id, release)
     }
