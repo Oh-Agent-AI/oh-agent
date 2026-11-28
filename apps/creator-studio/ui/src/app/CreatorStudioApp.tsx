@@ -524,6 +524,9 @@ export function CreatorStudioApp() {
       setCodeGameWorkspace({ ...created, template: templateId });
       setMessage(`Code Game 工作区已创建（${created.workspaceId}）；Agent 任务链路已切换到该工作区。`);
       // PR14 收官：创建后直接进入工作区面板（构建/预览入口），不再停留在目录页。
+      // 缺陷⑤修复：仅 setActivePanel 不会离开项目库路由页——必须同时切 route 到
+      // workspace（openWorkspacePanel 只切工作区内部面板）。
+      setRoute(STUDIO_WORKSPACE_ROUTE);
       openWorkspacePanel("code");
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_code_create_failed"); }
     finally { setBusy(false); }
