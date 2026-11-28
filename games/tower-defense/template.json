@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "templateId": "tower-defense",
+  "version": "0.1.0",
+  "name": "City Tower Defense",
+  "description": "塔防样例：敌人沿可信路线行进，两座塔按弧长布防，三波清空即成功、基地被毁即失败。",
+  "runtime": "code",
+  "genre": "strategy",
+  "tags": ["waves", "towers", "hud"],
+  "license": "MIT"
+}

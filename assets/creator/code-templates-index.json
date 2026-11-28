@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "templates": [
+    {
+      "compatibility": {
+        "requiredCapabilities": [
+          "world.read",
+          "roads.read"
+        ]
+      },
+      "description": "起步样例：一个自属实体沿 City 可信路线行进，并经 HUD 报告进度。",
+      "genre": "starter",
+      "license": "MIT",
+      "name": "Hello City",
+      "runtime": "code",
+      "source": {
+        "digest": "sha256:25797efe73b02217beb52c26408e7dc408878e61d644b45cd214b70372e94c8e",
+        "entry": "games/hello-city"
+      },
+      "tags": [
+        "route",
+        "hud"
+      ],
+      "templateId": "hello-city",
+      "tests": [
+        "games/hello-city/tests/hello-city.test.ts"
+      ],
+      "version": "0.1.0"
+    },
+    {
+      "compatibility": {
+        "requiredCapabilities": [
+          "world.read",
+          "roads.read"
+        ]
+      },
+      "description": "塔防样例：敌人沿可信路线行进，两座塔按弧长布防，三波清空即成功、基地被毁即失败。",
+      "genre": "strategy",
+      "license": "MIT",
+      "name": "City Tower Defense",
+      "runtime": "code",
+      "source": {
+        "digest": "sha256:1372fb6826d90d8054689de6fecff01e2c527ee9e44042b45423642305344648",
+        "entry": "games/tower-defense"
+      },
+      "tags": [
+        "waves",
+        "towers",
+        "hud"
+      ],
+      "templateId": "tower-defense",
+      "tests": [
+        "games/tower-defense/tests/tower-defense.test.ts"
+      ],
+      "version": "0.1.0"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "templateId": "hello-city",
+  "version": "0.1.0",
+  "name": "Hello City",
+  "description": "起步样例：一个自属实体沿 City 可信路线行进，并经 HUD 报告进度。",
+  "runtime": "code",
+  "genre": "starter",
+  "tags": ["route", "hud"],
+  "license": "MIT"
+}

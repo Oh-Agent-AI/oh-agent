@@ -271,6 +271,8 @@ pub fn dispatch_with_permissions_options(
         "creator_city_create" | "creator_city_create_from_world" | "creator_city_edit_preview" | "creator_city_patch_preview" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_city_anchor_list" | "creator_city_anchor_upsert" | "creator_city_anchor_remove" | "creator_mount_list" | "creator_mount_bind" | "creator_mount_unbind" | "creator_game_bind_preview" | "creator_experience_build" | "creator_experience_list" | "creator_experience_install" | "creator_experience_uninstall" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
         | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
         | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list"
+        // PR12 统一创作模板目录：静态离线目录面，与 capabilities 同一模块与错误映射。
+        | "creator_template_list"
         | "creator_vehicle_list" | "creator_vehicle_preview" | "creator_vehicle_define" | "creator_vehicle_inspect"
         // Story Project Registry（RFC V3 §12，S-2+S-3）：路由进 creator_studio 的同一写闸。
         | "creator_story_project_create" | "creator_story_project_read" | "creator_story_projects_list"
@@ -596,6 +598,37 @@ mod tests {
         assert_eq!(unknown.code, "invalid_argument");
         let bad_version = dispatch("creator_capabilities_list", &json!({"schemaVersion":2}), Path::new("/unused")).unwrap_err();
         assert_eq!(bad_version.code, "invalid_argument");
+    }
+
+    /// PR12 统一创作模板目录：声明式与 Code Game 模板在同一离线目录面并排输出，
+    /// runtime 过滤可用；目录条目只携带元数据（无路径、无可执行载荷）。
+    #[test]
+    fn creator_template_list_unifies_declarative_and_code_templates() {
+        let full = dispatch("creator_template_list", &json!({}), Path::new("/unused")).expect("template list must not require Studio");
+        let templates = full["data"]["templates"].as_array().expect("templates array");
+        assert_eq!(full["data"]["schemaVersion"], 1);
+        let runtime = |id: &str| templates.iter().find(|entry| entry["templateId"] == id).map(|entry| entry["runtime"].as_str().unwrap().to_string());
+        assert_eq!(runtime("checkpoint-race").as_deref(), Some("declarative"));
+        assert_eq!(runtime("hello-city").as_deref(), Some("code"));
+        assert_eq!(runtime("tower-defense").as_deref(), Some("code"));
+        let code = templates.iter().find(|entry| entry["templateId"] == "tower-defense").expect("tower-defense entry");
+        assert_eq!(code["createTool"], "creator_code_project_create");
+        assert_eq!(code["source"]["entry"], "games/tower-defense");
+        assert!(code["source"]["digest"].as_str().unwrap_or_default().starts_with("sha256:"));
+        assert!(code["compatibility"]["requiredCapabilities"].as_array().unwrap().iter().any(|value| value == "world.read"));
+        let declarative = templates.iter().find(|entry| entry["templateId"] == "collect-one").expect("collect-one entry");
+        assert_eq!(declarative["createTool"], "creator_project_create");
+        assert!(declarative["compatibility"]["requiredCapabilities"].as_array().unwrap().iter().any(|value| value == "drive"));
+
+        let only_code = dispatch("creator_template_list", &json!({"runtime":"code"}), Path::new("/unused")).unwrap();
+        let code_ids: Vec<&str> = only_code["data"]["templates"].as_array().unwrap().iter()
+            .filter_map(|entry| entry["templateId"].as_str()).collect();
+        assert_eq!(code_ids, vec!["hello-city", "tower-defense"]);
+        let only_declarative = dispatch("creator_template_list", &json!({"runtime":"declarative"}), Path::new("/unused")).unwrap();
+        let declarative_ids: Vec<&str> = only_declarative["data"]["templates"].as_array().unwrap().iter()
+            .filter_map(|entry| entry["templateId"].as_str()).collect();
+        assert!(declarative_ids.contains(&"checkpoint-race"));
+        assert!(!declarative_ids.contains(&"hello-city"));
     }
 
     /// 审查 P1-2：可选字段类型错误必须显式拒绝——静默丢弃会让调用方误以为

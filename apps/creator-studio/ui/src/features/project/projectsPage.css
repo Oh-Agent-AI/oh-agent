@@ -34,6 +34,17 @@
 .game-start-form { display: grid; gap: 12px; align-items: end; }
 .catalog-start .game-start-form { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
 .catalog-start .game-start-form p { grid-column: 1 / -1; }
+/* PR12 统一创作模板目录：Code Game 模板与声明式模板并排呈现。目录条目只是
+   创作入口元数据，不是授权——创建由 Agent 走 creator_code_project_create。 */
+.game-start-code-templates { grid-column: 1 / -1; display: grid; gap: 8px; }
+.game-start-code-templates h4 { margin: 0; font-size: 12px; color: #264d40; }
+.game-start-code-templates ul { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.game-start-code-templates li { display: grid; gap: 4px; padding: 8px 10px; border: 1px solid var(--catalog-border); border-radius: 6px; background: white; }
+.game-start-code-template-title { display: flex; align-items: center; gap: 8px; }
+.game-start-code-templates small { color: #63748a; font-size: 11px; }
+.catalog-runtime-badge { padding: 1px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; }
+.catalog-runtime-badge[data-runtime="declarative"] { color: #264d40; background: #e3efe7; }
+.catalog-runtime-badge[data-runtime="code"] { color: #7a4a12; background: #f7ecd9; }
 .studio-catalog-tools { margin-bottom: 12px; }
 .studio-catalog-tools button, .catalog-narrow-open {
   border-color: #d2dcd7;

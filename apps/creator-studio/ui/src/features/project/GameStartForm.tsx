@@ -1,5 +1,5 @@
-import { CREATOR_TEMPLATES_V1 } from "@oh-agent/city-sdk";
 import { layoutSelectionKey, type CityRow, type LayoutRow } from "../../contracts/creatorStudio";
+import { codeTemplateCatalog, declarativeTemplateCatalog, templateRuntimeLabels } from "./projectCatalogModel";
 
 export function GameStartForm({ cities, layouts, template, worldRevision, busy, submitLabel, onTemplateChange, onLayoutChange, onSubmit }: Readonly<{
   cities: readonly CityRow[];
@@ -18,7 +18,7 @@ export function GameStartForm({ cities, layouts, template, worldRevision, busy, 
     if (!busy && hasLayout) onSubmit();
   }}>
     <label>玩法模板<select value={template} disabled={busy} onChange={event => onTemplateChange(event.target.value)}>
-      {CREATOR_TEMPLATES_V1.filter(option => option.id !== "flight-checkpoint").map(option => <option key={option.id} value={option.id}>{option.label}</option>)}
+      {declarativeTemplateCatalog.filter(option => option.templateId !== "flight-checkpoint").map(option => <option key={option.templateId} value={option.templateId}>{option.name}</option>)}
     </select></label>
     <label>City 布局<select value={hasLayout ? worldRevision : ""} disabled={busy || layouts.length === 0} onChange={event => onLayoutChange(event.target.value)}>
       {!hasLayout && <option value="" disabled>{layouts.length === 0 ? "暂无 City 布局" : "选择布局"}</option>}
@@ -32,5 +32,18 @@ export function GameStartForm({ cities, layouts, template, worldRevision, busy, 
     </select></label>
     <button className="catalog-primary" type="submit" disabled={busy || !hasLayout}>{submitLabel}</button>
     {layouts.length === 0 && <p className="muted">先打开 City 生成道路布局，再回到 Studio。</p>}
+    {codeTemplateCatalog.length > 0 && <section className="game-start-code-templates" aria-label="Code Game 模板">
+      <h4>Code Game 模板</h4>
+      <ul>{codeTemplateCatalog.map(entry => <li key={entry.templateId}>
+        <div className="game-start-code-template-title">
+          <strong>{entry.name}</strong>
+          <span className="catalog-runtime-badge" data-runtime={entry.runtime}>{templateRuntimeLabels[entry.runtime]}</span>
+        </div>
+        {entry.description && <p>{entry.description}</p>}
+        <small>{[entry.genre, ...entry.tags].filter(Boolean).join(" · ")}</small>
+        <small>兼容能力：{entry.requiredCapabilities.join(" / ")}</small>
+        <small>以此创建：Agent 调用 {entry.createTool}（template=&quot;{entry.templateId}&quot;）</small>
+      </li>)}</ul>
+    </section>}
   </form>;
 }

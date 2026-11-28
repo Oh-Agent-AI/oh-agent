@@ -27,6 +27,8 @@ export type { CompiledRulesV1, RuleRunV1 } from "./runtime";
 export { parseMiniGamePackJson, validateMiniGamePack } from "./content";
 export { CREATOR_CAPABILITIES_V1, CREATOR_CAPABILITY_VERSION, CREATOR_GAME_TYPES_V1, CREATOR_OPERATIONS_V1, CREATOR_RECOVERIES_V1, CREATOR_WORLDS_V1, CREATOR_WORLD_BUDGETS_V1, type CreatorCapabilitiesDescriptor, type CreatorGameTypeStatusV1, type CreatorGameTypeSummaryV1, type CreatorOperationDescriptor, type CreatorOperationKind } from "./creatorCapabilities";
 export { CREATOR_TEMPLATES_V1, type CreatorTemplateV1 } from "./creatorTemplates";
+// PR12 统一创作模板目录：Code Game 模板目录（生成产物，勿手改——见文件头）。
+export { CREATOR_CODE_TEMPLATES_V1, type CreatorCodeTemplateV1 } from "./creatorCodeTemplates.generated";
 export { canonicalJson, validateCityContentPackage, validatePackageManifest, PACKAGE_V1_LIMITS } from "./package";
 export { validateContentPackageManifestV2, verifyContentPackageBytesV2, inspectContentPackageV2, inspectContentArtifactV2, CONTENT_PACKAGE_V2_LIMITS } from "./contentPackageV2";
 export { validateWorldPlanPatch } from "./worldPlanPatch";

@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { validateMiniGamePack } from "../src/content";
 import { CREATOR_CAPABILITIES_V1, CREATOR_OPERATIONS_V1, CREATOR_WORLDS_V1 } from "../src/creatorCapabilities";
 import { CREATOR_TEMPLATES_V1 } from "../src/creatorTemplates";
+import { CREATOR_CODE_TEMPLATES_V1 } from "../src/creatorCodeTemplates.generated";
 import { CREATOR_VEHICLE_CATALOG_V1 } from "../src/vehicleProfile";
 
 /**
@@ -82,4 +83,36 @@ test("generated assets on disk match the SDK constants (generator must have run)
   // 车辆目录（2026-11-15 泛化切片）：生成产物与 SDK 常量逐字段同源。
   const vehicles = JSON.parse(fs.readFileSync(`${assetsDir}/vehicles.json`, "utf8")) as Record<string, unknown>;
   assert.deepEqual(vehicles, JSON.parse(JSON.stringify(canonical(CREATOR_VEHICLE_CATALOG_V1))), "vehicles.json drifted from CREATOR_VEHICLE_CATALOG_V1");
+});
+
+// PR12 统一创作模板目录：Code Game 模板目录（games/<id>/template.json 碎片 +
+// 生成索引）的锁步守卫。索引是 Rust/MCP 的 allow list 数据源，形状/来源/兼容性
+// 漂移必须在这里显式失败。
+test("code templates: JSON index and TS face stay in lockstep with the games/ sources", () => {
+  const index = JSON.parse(fs.readFileSync(`${assetsDir}/code-templates-index.json`, "utf8")) as Record<string, unknown>;
+  assert.equal(index.schemaVersion, 1);
+  assert.deepEqual(index.templates, JSON.parse(JSON.stringify(canonical(CREATOR_CODE_TEMPLATES_V1))), "code-templates-index.json drifted from CREATOR_CODE_TEMPLATES_V1");
+  assert.ok(CREATOR_CODE_TEMPLATES_V1.length >= 1, "code template catalog must not be empty");
+  const gamesDir = fileURLToPath(new URL("../../../games", import.meta.url));
+  let previous = "";
+  for (const template of CREATOR_CODE_TEMPLATES_V1) {
+    assert.ok(template.templateId > previous, `entries must be sorted by templateId (${previous} < ${template.templateId})`);
+    previous = template.templateId;
+    assert.equal(template.runtime, "code");
+    assert.equal(template.source.entry, `games/${template.templateId}`, "source.entry must be the template's own relative path (fixed join, no escape)");
+    assert.ok(template.source.entry.startsWith("games/") && !template.source.entry.includes(".."), "source.entry must never escape games/");
+    assert.match(template.source.digest, /^sha256:[0-9a-f]{64}$/, "source.digest recipe: sha256:<64 lower-case hex>");
+    assert.ok(template.compatibility.requiredCapabilities.length >= 1, "compatibility must declare required world capabilities");
+    assert.ok(template.tests.length >= 1, "catalog entry must reference the template's test file");
+    // 碎片与仓库模板目录同源（生成器已核对；这里防索引↔目录漂移）。
+    const manifest = JSON.parse(fs.readFileSync(`${gamesDir}/${template.templateId}/game.manifest.json`, "utf8")) as { kind: string; displayName: string; version: string; world: { requiredCapabilities: string[] } };
+    assert.equal(manifest.kind, "code-game");
+    assert.equal(template.name, manifest.displayName, "catalog name must equal the manifest displayName");
+    assert.equal(template.version, manifest.version, "catalog version must equal the manifest version");
+    assert.deepEqual([...template.compatibility.requiredCapabilities], manifest.world.requiredCapabilities, "requiredCapabilities must come from the manifest world block");
+    const fragment = JSON.parse(fs.readFileSync(`${gamesDir}/${template.templateId}/template.json`, "utf8")) as Record<string, unknown>;
+    assert.equal(fragment.templateId, template.templateId);
+    assert.equal(fragment.license, template.license);
+    assert.deepEqual([...template.tags], fragment.tags);
+  }
 });
