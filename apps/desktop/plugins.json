@@ -602,7 +602,11 @@
         "creator.actor.register",
         "creator.actor.turn.context",
         "creator.actor.intent.submit",
-        "creator.game.intent.simulate"
+        "creator.game.intent.simulate",
+        "creator.code.project.create",
+        "creator.project.remix",
+        "creator.game.binding.propose",
+        "creator.game.binding.check"
       ],
       "hostEvents": [
         "plugin.event"
@@ -614,6 +618,7 @@
         "creator.story.timeline.inspect": { "requestBytes": 8192, "responseBytes": 393216 },
         "creator.game.intent.simulate": { "requestBytes": 16384, "responseBytes": 65536 },
         "creator.code.test.city_snapshot": { "requestBytes": 16384, "responseBytes": 1048576 },
+        "creator.code.project.create": { "requestBytes": 4096, "responseBytes": 65536 },
         "creator.story.project.create": {
           "requestBytes": 393216,
           "responseBytes": 65536
