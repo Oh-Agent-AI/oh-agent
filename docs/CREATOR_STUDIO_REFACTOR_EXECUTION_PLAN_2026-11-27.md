@@ -42,7 +42,7 @@
 | 11 · 有预算的自动修复 | 冻结验收标准 | ✅ 完成（2026-11-28） | `4c58ee3a` | 见 §4.13 |
 | 12 · Template Registry | 统一模板元数据 | ✅ 完成（2026-11-28） | `a33719cc` | 见 §4.14 |
 | 13 · Binding Resolver/Migration | 绑定提案与迁移 | ✅ 完成（2026-11-28） | `553ce1ef` | 见 §4.15 |
-| 14 · Gallery/Remix/E2E | 纵向闭环 | 进行中 | — | — |
+| 14 · Gallery/Remix/E2E | 纵向闭环 | ✅ 代码交付完成（2026-11-28） | `6557a383`+`dea20fba` | 见 §4.16（真机 E2E 待验收） |
 
 **波次与并发分组：**
 
@@ -252,3 +252,33 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 
 - 并行 A/B Preview 双开的真实窗口隔离、Studio 关闭重开后的 Preview 身份恢复（PR01）。
 - Tower Defense 纵向闭环十步（规范 §11）与 §11.1 非功能基准首测（PR14 之后）。
+
+### 4.16 PR14 实施记录（`6557a383` 可靠性修复 + `dea20fba` 交付）与阶段收官
+
+**PR14 三条真实创建/Remix 入口（禁止占位）：**
+- `creator_project_remix` MCP 工具桥接宿主幂等克隆事务 `creator.project.remix`（headless 臂同答）。
+- 新宿主行 `creator.code.project.create` **逐字复用 MCP crate 的 creator_code_project_create**（模板允许清单、路径逃逸闸、PR02 operationId 回执同源——单一写者，无重复实现），三面可答（Studio 在场拦截 / headless / 行表）；桌面本已依赖 agent-vitals-mcp，直接调用。
+- UI 真实操作：Code Game 模板卡片"以此创建"按钮（经宿主行），Candidate 面板已接受 Release"Remix 为新项目"（克隆后刷新列表并打开新草稿）；创建自模板后任务链路切到 code-game scope（PR10 合同：workspaceId + 内容摘要 revision）。
+- Token 文案核查：修复卡用户可见文案只提轮数与冻结标准，未声称 Token 已限制（PR11 hook 为诚实常量 0）。
+
+**审查遗留逐条回应（2026-11-28 外部审查）：**
+
+| 遗留 | 处理 |
+|---|---|
+| PR08 holdMs 未实际控制输入时长 | **已修复**（`6557a383`）：holdMs>0 自动零位释放（run 身份核对防串扰、新批次替换旧定时器）、越界整批拒绝、playtest.end 清理定时器；空壳 releasePlaytestInput 的清空语义保留并补齐 |
+| MCP 与宿主并发写试玩状态 | **已修复**（同提交）：双侧统一 sqlite BEGIN IMMEDIATE 文件锁（playtest-locks/<previewId>.sqlite）覆盖全部会话读-改-写；capture-request/screenshot 单向流不纳入（最坏多投递一轮，注释说明）；锁序全程 进程内→跨进程 |
+| Token 统计恒为 0 | 维持 hook（执行器层未暴露用量），UI 文案已核查不声称限制 |
+| 自动修复仅部分执行模式 | 边界已在 §4.13 声明：修复轮仅 code-game push 模式；pull 保持一次性验证 |
+| PR13 Code Game Mount 绑定 | 维持边界：code-game 安装走 capability-based 协议（§4.15 残留声明） |
+| 真实 Desktop E2E | **待真机验收**（见下） |
+
+**三态区分（诚实收口）：**
+- 自动化测试通过：MCP 233（+1 锁语义测试）、桌面 592、UI 141、SDK 87、agent-city typecheck、clippy（MCP+桌面）、`git diff --check`——全绿。
+- 代码交付完成：PR01–14 全部提交；E2E 的自动化子集（模板允许清单→workspace 创建→候选 fork/编辑→build/test verdict 链→remix 幂等）在 PR02/09/10/12 的 Rust 测试中覆盖。
+- **真实 Desktop 验收（未完成，需用户执行）**：Tower Defense 十步纵向闭环（规范 §11）需在桌面构建上人工执行：模板创建→Agent 修改→构建/测试/修复→预览/自动试玩→确认/发布→安装运行；附 §11.1 非功能基准首测。UI 创建/Remix 按钮的端到端行为（真实 webview 交互）属此列。
+
+**阶段基线冻结**：Wave 1–4（PR01–14）交付后冻结 Creator Studio 改造的架构基线；Living World Engine（W00–W06）、内容独立化（W07）、开放生态（W08）属下一阶段，不进入本计划。后续修复仅走常规 bug 流程，不再扩 PR 计数。
+
+**Wave 4 边界全套检查（2026-11-28，全部通过）**：MCP 233 / 桌面 592 / UI 141 / SDK 87 / agent-city typecheck / clippy（MCP+桌面）/ `git diff --check`。
+
+**PR14 残留（如实）**：code-game scope 会话内保持（跨重启恢复需工作区列表面 + 摘要重绑策略，属下一阶段）；Remix 入口在 Candidate 面板（项目目录卡片上的 Remix 需 release 数据进目录行，推迟）；E2E 真机验收未执行。
