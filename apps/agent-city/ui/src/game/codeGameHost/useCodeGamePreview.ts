@@ -270,6 +270,21 @@ export function useCodeGamePreview(options: Readonly<{
     }).catch(() => {});
   }, []);
 
+  // PR14 修复（审查遗留）：holdMs 此前被接收但完全未使用——输入一次性设置、
+  // 从不自动释放，"按住 N 毫秒"语义形同虚设。现在 holdMs>0 的批次在 holdMs 后
+  // 自动回到零位（boolean→false，number→0）；holdMs=0 的批次保持到 playtest.end
+  // 显式释放。宿主已限 holdMs ≤5000，这里 30s 是渲染端防御上限；越界整批拒绝
+  // （fail-closed，不静默当 0 应用）。定时器按 run 身份核对，旧 run 的释放绝不
+  // 打到替换后的新 run 上；新批次替换旧定时器（后写者获胜，与宿主队列一致）。
+  const heldReleaseRef = useRef<{ timer: number; run: CodeGameRunV2<Object3D>; zeroed: Record<string, boolean | number> } | null>(null);
+  const clearHeldRelease = useCallback((): void => {
+    const held = heldReleaseRef.current;
+    if (held) {
+      window.clearTimeout(held.timer);
+      heldReleaseRef.current = null;
+    }
+  }, []);
+
   const applyPlaytestInput = useCallback((control: PlaytestInputControlV1): void => {
     const sessionId = typeof control.sessionId === "string" && control.sessionId.length <= 128 ? control.sessionId : null;
     const seq = typeof control.seq === "number" && Number.isInteger(control.seq) && control.seq > 0 ? control.seq : null;
@@ -278,7 +293,9 @@ export function useCodeGamePreview(options: Readonly<{
       && Object.entries(actions).every(([key, value]) => key.length >= 1 && key.length <= 64
         && (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value))))
       && Object.keys(actions).length <= 32;
-    if (!sessionId || !seq || !validActions) {
+    const holdMs = typeof control.holdMs === "number" && Number.isInteger(control.holdMs)
+      && control.holdMs >= 0 && control.holdMs <= 30_000 ? control.holdMs : null;
+    if (!sessionId || !seq || !validActions || holdMs === null) {
       publishInputResult(sessionId, seq, false, "playtest_input_invalid");
       return;
     }
@@ -290,10 +307,22 @@ export function useCodeGamePreview(options: Readonly<{
     try {
       run.setInput(actions);
       publishInputResult(sessionId, seq, true);
+      clearHeldRelease();
+      if (holdMs > 0) {
+        const zeroed = Object.fromEntries(Object.entries(actions as Record<string, boolean | number>)
+          .map(([key, value]) => [key, typeof value === "boolean" ? false : 0]));
+        const timer = window.setTimeout(() => {
+          heldReleaseRef.current = null;
+          if (runRef.current === run && !run.isDisposed) {
+            try { run.setInput(zeroed); } catch { /* run is being torn down */ }
+          }
+        }, holdMs);
+        heldReleaseRef.current = { timer, run, zeroed };
+      }
     } catch {
       publishInputResult(sessionId, seq, false, "game_argument_invalid");
     }
-  }, [publishInputResult]);
+  }, [publishInputResult, clearHeldRelease]);
 
   const capturePlaytestScreenshot = useCallback(async (control: PlaytestCaptureControlV1): Promise<void> => {
     const captureId = typeof control.captureId === "string" && control.captureId.length <= 128 ? control.captureId : null;
@@ -312,12 +341,14 @@ export function useCodeGamePreview(options: Readonly<{
   }, [engineRef]);
 
   const releasePlaytestInput = useCallback((_control: PlaytestEndControlV1): void => {
-    // 会话结束：释放仍按下的动作（setInput 空表），避免悬停键位污染下一次试玩。
+    // 会话结束：清掉待触发的自动释放，然后释放仍按下的动作（setInput 空表），
+    // 避免悬停键位污染下一次试玩。
+    clearHeldRelease();
     const run = runRef.current;
     if (run instanceof CodeGameRunV2 && !run.isDisposed) {
       try { run.setInput({}); } catch { /* run is being torn down */ }
     }
-  }, []);
+  }, [clearHeldRelease]);
 
   const startNextPreview = useCallback(async (): Promise<boolean> => {
     const pending = await takeCityCodePreview();

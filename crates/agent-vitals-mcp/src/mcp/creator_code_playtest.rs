@@ -132,6 +132,33 @@ fn previews_root(data_home: &Path) -> PathBuf {
     data_home.join("state/creator/code-games/previews")
 }
 
+/// PR14：playtest 会话文件的跨进程写锁（与桌面宿主 `playtest_file_lock` 同一路径
+/// 与语义：`state/creator/code-games/playtest-locks/<previewId>.sqlite`）。MCP 直写的
+/// 读-改-写必须与宿主的 serve 消费 / ack 回执 / 终态化串行化，tmp+rename 只防半写
+/// 不防丢失更新。持有即锁（BEGIN IMMEDIATE），Drop 时 ROLLBACK 释放。
+struct PlaytestFileLockGuard {
+    connection: rusqlite::Connection,
+}
+
+impl Drop for PlaytestFileLockGuard {
+    fn drop(&mut self) {
+        let _ = self.connection.execute_batch("ROLLBACK");
+    }
+}
+
+fn playtest_file_lock(data_home: &Path, preview_id: &str) -> Result<PlaytestFileLockGuard, ToolError> {
+    let root = data_home.join("state/creator/code-games").join("playtest-locks");
+    std::fs::create_dir_all(&root)
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot create the playtest lock directory."))?;
+    let connection = rusqlite::Connection::open(root.join(format!("{preview_id}.sqlite")))
+        .map_err(|_| ToolError::new("storage_unavailable", "Cannot open the playtest session lock."))?;
+    connection.busy_timeout(std::time::Duration::from_millis(2_000))
+        .map_err(|_| ToolError::new("storage_unavailable", "The playtest session lock store is busy."))?;
+    connection.execute_batch("BEGIN IMMEDIATE")
+        .map_err(|_| ToolError::new("busy", "Another writer is updating this playtest session; retry."))?;
+    Ok(PlaytestFileLockGuard { connection })
+}
+
 fn read_json(path: &Path, max_bytes: u64) -> Result<Option<Value>, ToolError> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
@@ -211,6 +238,10 @@ fn playtest_input(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let request = read_json(&directory.join("request.json"), 4_096)?;
     let path = directory.join("playtest.json");
     let now = now_ms();
+    // PR14：跨进程会话锁（与宿主 serve 消费/ack 回执/终态化同一把 sqlite
+    // Immediate 锁）——MCP 直写的读-改-写必须与宿主并发面串行化，否则
+    // tmp+rename 的原子性防不了丢失更新（入队覆盖刚记录的 ack、消费覆盖新批次）。
+    let _file_guard = playtest_file_lock(data_home, &preview_id)?;
     let mut session = read_json(&path, 256 * 1024)?.unwrap_or_else(|| json!({}));
     let expired = session.get("expiresAtMs").and_then(Value::as_u64).is_some_and(|expiry| now >= expiry);
     let active = session.is_object() && session.get("status").and_then(Value::as_str) == Some("active") && !expired;
@@ -265,6 +296,8 @@ fn playtest_stop(args: &Value, data_home: &Path) -> Result<Value, ToolError> {
     let preview_id = preview_id_arg(args)?;
     let path = previews_root(data_home).join(&preview_id).join("playtest.json");
     let now = now_ms();
+    // PR14：跨进程会话锁（同 playtest_input；读-改-写临界区）。
+    let _file_guard = playtest_file_lock(data_home, &preview_id)?;
     let Some(mut session) = read_json(&path, 256 * 1024)? else {
         return Ok(json!({"ok":true,"data":{"stopped":false,"reason":"no_session"}}));
     };
@@ -375,6 +408,27 @@ mod tests {
     fn write(path: &Path, value: Value) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, serde_json::to_vec(&value).unwrap()).unwrap();
+    }
+
+    /// PR14 并发修复：会话文件锁持有即互斥——第二个写者立即 busy（不无限等待），
+    /// 持有者 Drop（ROLLBACK 释放）后可再次获取。两侧（MCP/宿主）用同一路径同一
+    /// 语义，跨进程串行化靠的是 sqlite 文件级锁而非进程内存。
+    #[test]
+    fn playtest_file_lock_is_mut_exclusive_and_released_on_drop() {
+        let home = temp_home("lock");
+        let first = playtest_file_lock(&home, "preview-lock").expect("first acquire");
+        let second = match playtest_file_lock(&home, "preview-lock") {
+            Err(error) => error,
+            Ok(_) => panic!("second acquire must conflict while the first guard is held"),
+        };
+        assert_eq!(second.code, "busy");
+        drop(first);
+        let third = match playtest_file_lock(&home, "preview-lock") {
+            Ok(guard) => guard,
+            Err(error) => panic!("acquire after release must succeed: {error}"),
+        };
+        drop(third);
+        std::fs::remove_dir_all(home).ok();
     }
 
     fn running_preview(home: &Path, preview_id: &str) {

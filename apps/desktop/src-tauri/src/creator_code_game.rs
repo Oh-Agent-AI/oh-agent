@@ -708,6 +708,40 @@ fn playtest_path(home: &Path, preview_id: &str) -> Result<PathBuf, String> {
     Ok(preview_dir(home, preview_id)?.join("playtest.json"))
 }
 
+/// PR14 可靠性收尾：playtest 会话文件的跨进程写锁。MCP（独立进程）与宿主进程
+/// 都对 `playtest.json` 做读-改-写；tmp+rename 只保证不半写，防不了丢失更新
+/// （入队批次覆盖刚记录的 ack、消费覆盖新批次）。两侧用同一把 sqlite
+/// Immediate 事务锁（PR09 candidate lock 同模式）串行化每个临界区；宿主进程内
+/// 的并发（poll tick vs ack 回执）也由它一并覆盖。锁文件与 MCP 侧同路径：
+/// `<data_home>/state/creator/code-games/playtest-locks/<previewId>.sqlite`。
+/// capture-request/screenshot 不纳入：MCP 写请求、宿主 fail-closed 取走的方向
+/// 竞争最坏是多投递一轮，无读-改-写丢失面（见 serve_preview_capture 注释）。
+/// 持有即锁（BEGIN IMMEDIATE），Drop 时 ROLLBACK 释放——Transaction 借用
+/// Connection 无法返回所有权，guard 结构让调用点保持单行 `let _guard = …`。
+struct PlaytestFileLockGuard {
+    connection: rusqlite::Connection,
+}
+
+impl Drop for PlaytestFileLockGuard {
+    fn drop(&mut self) {
+        let _ = self.connection.execute_batch("ROLLBACK");
+    }
+}
+
+fn playtest_file_lock(home: &Path, preview_id: &str) -> Result<PlaytestFileLockGuard, String> {
+    let root = code_games_root(home).join("playtest-locks");
+    std::fs::create_dir_all(&root).map_err(|_| "code_game_state_unavailable".to_string())?;
+    let connection = rusqlite::Connection::open(root.join(format!("{preview_id}.sqlite")))
+        .map_err(|_| "code_game_state_unavailable".to_string())?;
+    connection
+        .busy_timeout(std::time::Duration::from_millis(2_000))
+        .map_err(|_| "code_game_state_unavailable".to_string())?;
+    connection
+        .execute_batch("BEGIN IMMEDIATE")
+        .map_err(|_| "code_game_playtest_busy".to_string())?;
+    Ok(PlaytestFileLockGuard { connection })
+}
+
 fn playtest_session_is_active(session: &Value) -> bool {
     session.get("status").and_then(Value::as_str) == Some("active")
 }
@@ -750,6 +784,8 @@ pub(crate) fn playtest_input(home: &Path, preview_id: &str, actions: &Value, hol
         return Err("game_run_not_found".into());
     }
     let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // PR14：跨进程会话锁（与 MCP 直写面同锁）。进程内锁 → 跨进程锁是宿主侧固定序。
+    let _file_guard = playtest_file_lock(home, preview_id)?;
     let path = playtest_path(home, preview_id)?;
     let mut session = read_json(&path, 256 * 1024)?.unwrap_or_else(|| json!({}));
     let expired = session.get("expiresAtMs").and_then(Value::as_u64).is_some_and(|expiry| now >= expiry);
@@ -812,6 +848,8 @@ pub(crate) fn playtest_input(home: &Path, preview_id: &str, actions: &Value, hol
 pub(crate) fn playtest_stop(home: &Path, preview_id: &str, now: u64) -> Result<Value, String> {
     if !valid_preview_id(preview_id) { return Err("code_game_preview_request_invalid".into()); }
     let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // PR14：跨进程会话锁（与 MCP stop 直写面同锁；固定序 进程内 → 跨进程）。
+    let _file_guard = playtest_file_lock(home, preview_id)?;
     let path = playtest_path(home, preview_id)?;
     let Some(mut session) = read_json(&path, 256 * 1024)? else { return Ok(json!({"stopped":false,"reason":"no_session"})); };
     if !playtest_session_is_active(&session) { return Ok(json!({"stopped":false,"reason":"already_finished"})); }
@@ -828,6 +866,12 @@ pub(crate) fn playtest_stop(home: &Path, preview_id: &str, now: u64) -> Result<V
 /// 未消费的截图请求。record_preview_state 的终态分支与窗口销毁都会走到这里。
 fn finish_playtest_on_terminal(home: &Path, preview_id: &str) {
     let Ok(path) = playtest_path(home, preview_id) else { return };
+    // PR14：终态化是与 MCP 写入、ack 回执并发的读-改-写，同样取跨进程会话锁
+    // （独立取锁，无进程内锁嵌套——本函数可从任意线程进入）。
+    let file_guard = match playtest_file_lock(home, preview_id) {
+        Ok(guard) => guard,
+        Err(_) => return,
+    };
     let mut session = match read_json(&path, 256 * 1024) {
         Ok(Some(session)) => session,
         _ => return,
@@ -841,6 +885,7 @@ fn finish_playtest_on_terminal(home: &Path, preview_id: &str) {
         }
         write_json_atomic(&path, &session).ok();
     }
+    drop(file_guard);
     if let Ok(directory) = preview_dir(home, preview_id) {
         std::fs::remove_file(directory.join("capture-request.json")).ok();
     }
@@ -857,6 +902,11 @@ fn idle_preview_envelope(home: &Path, preview_id: &str) -> Value {
 /// None——试玩投递绝不能打断 preview 生命周期轮询。
 fn serve_preview_playtest(home: &Path, preview_id: &str, now: u64) -> Option<Value> {
     let path = playtest_path(home, preview_id).ok()?;
+    // PR14：消费是与 MCP 入队/回执并发的读-改-写，整个消费临界区取跨进程会话锁
+    // （锁内不调 studio_status_for 之外的宿主写面；该观测只读）。锁获取失败按
+    // 无信封处理——下一轮 poll 重试，绝不阻塞预览轮询。
+    // 锁持有到本函数返回（覆盖全部读-改-写与写回路径）。
+    let _file_guard = playtest_file_lock(home, preview_id).ok()?;
     let mut session = match read_json(&path, 256 * 1024) {
         Ok(Some(session)) => session,
         Ok(None) => return serve_preview_capture(home, preview_id),
@@ -962,6 +1012,8 @@ pub(crate) fn record_playtest_ack(home: &Path, preview_id: &str, result: &Value)
             .ok_or("playtest_input_result_invalid")?.to_owned()),
     };
     let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // PR14：ack 写回与 MCP 入队/serve 消费并发，同取跨进程会话锁（固定序）。
+    let _file_guard = playtest_file_lock(home, preview_id).map_err(|_| "code_game_preview_request_invalid")?;
     let path = playtest_path(home, preview_id).map_err(|_| "code_game_preview_request_invalid")?;
     let Some(mut session) = read_json(&path, 256 * 1024).map_err(|_| "playtest_input_result_invalid")? else { return Ok(false) };
     let Some(object) = session.as_object_mut() else { return Ok(false) };
