@@ -94,9 +94,12 @@ export function useStudioTasks(request: CreatorRequest, scope: TaskScope, enable
         const opened = await request<{ sessionId: string; jobs?: unknown[] }>("creator.session.open", {
           agentId: "creator-studio-local",
           // code-game 会话作用域扩展是 PR14 工作：先按无 scope 会话打开（宿主
-          // session 作用域仍只建模 project/city）。
+          // session 作用域仍只建模 project/city）。关键（真机验收缺陷④）：传入的
+          // sessionId 属于旧 project 工作区的作用域——resume 校验会以
+          // creator_session_scope_mismatch 拒绝，code-game 时必须丢弃旧会话句柄，
+          // 打开无作用域的新会话（任务按 artifact 绑定工作区，会话仅簿记）。
           ...(scope.kind === "creator-city" ? { cityId: scopeId } : scope.kind === "creator-project" ? { projectId: scopeId } : {}),
-          ...(sessionId ? { sessionId } : {}),
+          ...(sessionId && scope.kind !== "code-game" ? { sessionId } : {}),
           executor: "studio", transport: "studio-webview",
           capabilities: ["studio.webview", "preview.scene", "preview.game", "operation.review"],
         });
