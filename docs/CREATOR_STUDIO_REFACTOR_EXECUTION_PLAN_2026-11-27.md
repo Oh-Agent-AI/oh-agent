@@ -40,7 +40,7 @@
 | 09 · Candidate Workspace | 基线隔离 + CAS 接受 | ✅ 完成（2026-11-28） | `f9047a00` | 见 §4.11 |
 | 10 · Code Game Task Adapter | StudioArtifactRef 统一 | ✅ 完成（2026-11-28） | `ef498f2b` | 见 §4.12 |
 | 11 · 有预算的自动修复 | 冻结验收标准 | ✅ 完成（2026-11-28） | `4c58ee3a` | 见 §4.13 |
-| 12 · Template Registry | 统一模板元数据 | 未开始 | — | — |
+| 12 · Template Registry | 统一模板元数据 | ✅ 完成（2026-11-28） | `a33719cc` | 见 §4.14 |
 | 13 · Binding Resolver/Migration | 绑定提案与迁移 | 未开始 | — | — |
 | 14 · Gallery/Remix/E2E | 纵向闭环 | 未开始 | — | — |
 
@@ -226,6 +226,16 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 | `git diff --check`（每次 Rust 提交前后） | 干净；未运行任何 Rust 格式化器 |
 
 **PR11 残留（如实）**：Token/成本会计待未来执行器集成（仅 hook）；criteria 提案/审批无 UI 面（仅 MCP 工具，面板不显示待审提案 digest）；pull 模式无修复循环；修复轮仅限 code-game（唯一有候选层的 artifact）；墙钟仅在修复轮入口强制（单轮内仍受执行器自身 600s 上限约束）。
+
+### 4.14 PR12 实施记录（`a33719cc`；含 PR08 遗留 clippy 修复 `0160fdbd`）
+
+- **单一数据源**：`games/<id>/template.json` 微片段（封闭词表：schemaVersion/templateId/version/name/description/runtime:"code"/genre/tags/license；生成器交叉校验 name==manifest.displayName、version、kind、templateId==目录名，游戏代码不动）→ 同一 `generate-creator-capabilities.mjs` 管线（`--check` 幂等保留）→ 一份数据集双面孔输出：`assets/creator/code-templates-index.json`（Rust include_str!）+ `creatorCodeTemplates.generated.ts`（UI/TS 面——JSON import attributes 跨 node/tsgo/vite 脆弱）。`source.digest` 为文档化 sha256 配方（镜像 digest_workspace 形状；来源身份，index↔games 锁步由 guard 测试强制而非运行时重算——模板编辑后只需再生成）。
+- **MCP**：新离线工具 `creator_template_list`（schemaVersion 1、可选 runtime 过滤、createTool 映射 declarative→creator_project_create / code→creator_code_project_create）；`creator_code_project_create` 从硬编码 hello-city 改为内嵌索引允许清单（未知/逃逸 id → invalid_argument 并列出已注册 id + `next` 恢复指向 creator_template_list），纵深防御：`valid_template_id` 字符集闸（禁 `..`/`/`/`\`/`:`）+ entry 必须恰为 `games/<id>` + 保留 game.manifest.json 存在性检查为真正授权；`rewrite_manifest` 不再硬编码 community.hello-city（按模板替换 gameId）；PR02 回执携带实际模板。打包脚本 vendor 所有注册模板。
+- **UI**：统一目录模型（`projectCatalogModel.ts`：TemplateCatalogEntry + 声明式/code 分目录 + runtime 标签）；GameStartForm 声明式下拉改由统一模型驱动（同选项同顺序）+ 新增 Code Game 模板卡片区（runtime 徽章、类型/标签、兼容提示、诚实"以此创建"指引——UI 无宿主通道创建 code workspace，不放假提交按钮）；只读 Installation 绝不伪装成源码模板。
+- **Guard 测试**：桌面锁步（index 形状/id 排序/entry 无逃逸/digest 形态/能力 vs games 源）；SDK JSON↔TS 面↔games 锁步；UI 目录测试（3 个）。
+- **附带修复（`0160fdbd`）**：PR08 的 `playtest_input/playtest_stop` 是会话文件契约的宿主侧参考实现（生产写路径在 MCP 直写面，serve 再独立校验），仅测试调用——Wave 2 检查范围未含桌面 clippy 遗留的 dead_code 告警，以 `cfg_attr(not(test), allow(dead_code))` + 路由注释诚实标注（保留其钉住预算/队列/回执语义的价值）。桌面 clippy 现已干净。
+- **检查**：MCP 230（+4）、桌面 lib 581（+1 锁步）、city-sdk 171（含锁步）、UI 140（+3）+ typecheck + vite build、生成器 `--check` 幂等、clippy（MCP+桌面）干净、`git diff --check` 干净。
+- **残留（如实）**：cover 图、逐模板 parameters/bindingSlots 推迟（PR13 绑定工作）；Remix 入口是 PR14；声明式条目的 description/genre/tags 暂为 null（SDK 常量尚无这些字段）；运行时不重算 source.digest（锁步靠 guard 测试）。
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
