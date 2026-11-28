@@ -792,10 +792,17 @@ fn poll_plugin_call_queue(app: &tauri::AppHandle) {
         // PR05 纯宿主本地方法：City 冻结快照服务不依赖视口，Studio 在场也由宿主
         // 直接作答（webview 没有 handler，投递只会得到 plugin_call_method_unavailable）；
         // 预算由描述符 localCallBudgets 执行，超预算由 respond_with_budget 终结。
-        if method == "creator.code.test.city_snapshot" || method == "creator.code.test.record" {
+        if method == "creator.code.test.city_snapshot" || method == "creator.code.test.record"
+            || method == "creator.code.project.create" {
             let payload = call.get("payload").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
             let result = if method == "creator.code.test.city_snapshot" {
                 crate::creator_code_game::city_test_snapshot(&home, &payload)
+            } else if method == "creator.code.project.create" {
+                // PR14：模板创建（MCP crate 实现；响应信封解包成 data 直接回执，
+                // 与行表其他方法同形）。宿主行权限治理内 = allow_local_writes；
+                // 回执 actor 恒为 LOCAL_CREATOR_OWNER（重放一致），实例名只记账。
+                crate::creator_projects::dispatch_as(&home, crate::creator_projects::LOCAL_CREATOR_OWNER,
+                    "studio-code-create", &method, &payload)
             } else {
                 crate::creator_code_game::code_test_record(&home, &payload)
             };
@@ -909,6 +916,12 @@ fn headless_creator_methods() -> Vec<String> {
         // city layout 快照），无视口依赖——Studio 不在场时也要能产出可执行提案。
         "creator.game.binding.propose",
         "creator.game.binding.check",
+        // PR14 Remix：纯宿主本地克隆事务（creator_operations 回执幂等），Studio
+        // 不在场时 Agent 也能从已发布 release 开出可编辑草稿。
+        "creator.project.remix",
+        // PR14 Code Game 模板创建：UI 卡片"以此创建"与 Agent 共用（实现复用 MCP
+        // crate 的 creator_code_project_create，单一写者——同一份回执与工作区）。
+        "creator.code.project.create",
         // pull 模式 submit 的服务端复核：纯宿主本地检查（内存 preview 表），
         // Studio 不在场时也必须可作答，否则任何 Agent 的提交都会 15s 超时。
         "creator.task.preview.verify",
@@ -1099,6 +1112,10 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         | "creator.story.timeline.inspect" | "creator.game.intent.simulate"
         // PR13 §7：绑定提案/迁移检查走同一宿主管线（只读，无 headless 特例）。
         | "creator.game.binding.propose" | "creator.game.binding.check"
+        // PR14：Remix 克隆同管线（纯宿主本地事务，无 headless 特例）。
+        | "creator.project.remix"
+        // PR14：Code Game 模板创建同管线（MCP crate 实现，宿主行转发）。
+        | "creator.code.project.create"
         | "creator.task.preview.verify"
         // PR05：宿主本地冻结快照服务走 dispatch_as 的 creator_row（与 Studio 在场
         // 时同一条宿主管线），无 headless 特例。PR06 记录读面同管线。

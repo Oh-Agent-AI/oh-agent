@@ -247,10 +247,17 @@ export function CreatorStudioApp() {
   const selectedEntity = selection?.scope === selectionScope ? selection.reference ?? null : null;
   useEffect(() => { setSelection(null); setEntityDiagnostic(idlePreviewEntityDiagnostic); }, [selectionScope, route.section, installedWorldView]);
   // 单一任务控制器按活动工件切换 scope：Story 工具打开时整条链路（订阅、任务、
-  // 历史）切到 story 工件，杜绝 Story 面板自建第二套会话逻辑。
+  // 历史）切到 story 工件，杜绝 Story 面板自建第二套会话逻辑。PR14：从模板创建
+  // Code Game 工作区后任务链路切到该工作区（workspaceId + 内容摘要 revision，
+  // PR10 合同）；scope 仅在会话内保持，跨重启恢复列为 PR14 残留（workspace
+  // 摘要随内容变化，无列表工具时不做静默重绑）。
   const [storyTaskScope, setStoryTaskScope] = useState<TaskScope>(null);
   const storyTaskActive = activePanel === "story" && !!storyTool;
-  const activeTaskScope = storyTaskActive ? storyTaskScope : taskScope;
+  const [codeGameWorkspace, setCodeGameWorkspace] = useState<{ workspaceId: string; projectId: string; gameId: string; gameRevision: string; template: string } | null>(null);
+  const codeGameTaskScope: TaskScope = codeGameWorkspace
+    ? { kind: "code-game", workspaceId: codeGameWorkspace.workspaceId, revision: codeGameWorkspace.gameRevision }
+    : null;
+  const activeTaskScope = storyTaskActive ? storyTaskScope : codeGameTaskScope ?? taskScope;
   const studioTasks = useStudioTasks(creatorRequest, activeTaskScope,
     !browserPreview && (storyTaskActive ? true : !!activeSessionId),
     storyTaskActive ? false : !!(draftCityView || projectCityKey),
@@ -500,6 +507,35 @@ export function CreatorStudioApp() {
       setCityDraftOperationId(`city-draft-commit:${crypto.randomUUID()}`);
       setMessage("City 草稿已创建，尚未注册到正常 City 列表；首次保存才会注册。取消或过期不会留下 City。");
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_city_draft_create_failed"); }
+    finally { setBusy(false); }
+  };
+  // PR14 模板创建真实链路：Code Game 卡片"以此创建"直达宿主行
+  // creator.code.project.create（实现复用 MCP crate，同一份 PR02 operationId
+  // 回执与工作区目录——与 Agent 调 creator_code_project_create 完全同一条链）。
+  // 成功后任务链路切到该工作区（code-game scope）。
+  const createCodeGame = async (templateId: string) => {
+    setBusy(true); setMessage("");
+    const operationId = `code-create:${crypto.randomUUID()}`;
+    try {
+      const created = await creatorRequest<{ workspaceId: string; projectId: string; gameId: string; gameRevision: string }>(
+        "creator.code.project.create", { template: templateId, operationId, title: templateId });
+      setCodeGameWorkspace({ ...created, template: templateId });
+      setMessage(`Code Game 工作区已创建（${created.workspaceId}）；Agent 任务链路已切换到该工作区。`);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_code_create_failed"); }
+    finally { setBusy(false); }
+  };
+  // PR14 Remix 真实入口：已接受 Release 一键克隆为新可编辑草稿（宿主
+  // creator.project.remix 幂等回执；remixSource 保留来源）。成功后刷新项目
+  // 列表并打开新草稿。
+  const remixRelease = async (releaseId: string) => {
+    setBusy(true); setMessage("");
+    const operationId = `remix:${crypto.randomUUID()}`;
+    try {
+      const remixed = await creatorRequest<{ projectId: string }>("creator.project.remix", { sourceReleaseId: releaseId, operationId });
+      await refreshProjectCatalog();
+      setMessage(`已从 ${releaseId} Remix 出新草稿 ${remixed.projectId}。`);
+      openProjectInWorkspace(remixed.projectId);
+    } catch (error) { setMessage(error instanceof Error ? error.message : "creator_remix_failed"); }
     finally { setBusy(false); }
   };
   const commitCityDraft = async () => {
@@ -1321,7 +1357,8 @@ export function CreatorStudioApp() {
   }, [activePanel, project?.cityLayout, baseViewport]);
   const candidatePanel = <CandidatePanel candidate={candidate} busy={busy} browserPreview={browserPreview} hasUncommittedProjectEdits={hasUncommittedProjectEdits}
     hasMounts={!!project?.mounts.length} publishedReleaseId={publishedReleaseId} onCreate={() => void createCandidate()} onTest={() => void startCandidatePlaytest()}
-    onAccept={() => void acceptCandidate()} onPlaytestRelease={() => void startPlaytest()} onDirectPublish={() => void publish()} />;
+    onAccept={() => void acceptCandidate()} onPlaytestRelease={() => void startPlaytest()} onDirectPublish={() => void publish()}
+    onRemixRelease={() => publishedReleaseId && void remixRelease(publishedReleaseId)} />;
   const entityEngineFor = (source: PreviewViewportSource): CityEngine | null => source === "agent" ? agentPreviewEngineRef.current : source === "draft" ? draftEngineRef.current : studioEngineRef.current;
   const entityScopeFor = (source: PreviewViewportSource): PreviewEntityScope | null => {
     const current = projectRef.current;
@@ -1484,7 +1521,10 @@ export function CreatorStudioApp() {
             busy={busy || (catalogStartMode === "agent-new" && !normalizeStudioGoal(goalDraft))}
             submitLabel={switchConfirm === "create" ? "确认丢弃草稿并新建" : catalogStartMode === "agent-new" ? "创建并带目标进入编辑器" : "创建项目"}
             onTemplateChange={setTemplate} onLayoutChange={setWorldRevision}
-            onSubmit={() => guardDrafts("create", () => void createProject("agent"))} />} />}
+            onSubmit={() => guardDrafts("create", () => void createProject("agent"))}
+            codeGameCreating={busy}
+            activeCodeTemplateId={codeGameWorkspace?.template ?? null}
+            onCreateCodeTemplate={templateId => void createCodeGame(templateId)} />} />}
         onOpenProject={openProjectInWorkspace} onRefreshProjects={refreshProjectCatalog} onOpenCity={openCityInWorkspace}
         onConfigureGame={id => openProjectInWorkspace(id, undefined, "mount")}
         onOpenGamePreview={openCodeGamePreview}

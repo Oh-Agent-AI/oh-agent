@@ -1,7 +1,7 @@
 import { layoutSelectionKey, type CityRow, type LayoutRow } from "../../contracts/creatorStudio";
 import { codeTemplateCatalog, declarativeTemplateCatalog, templateRuntimeLabels } from "./projectCatalogModel";
 
-export function GameStartForm({ cities, layouts, template, worldRevision, busy, submitLabel, onTemplateChange, onLayoutChange, onSubmit }: Readonly<{
+export function GameStartForm({ cities, layouts, template, worldRevision, busy, submitLabel, onTemplateChange, onLayoutChange, onSubmit, codeGameCreating, activeCodeTemplateId, onCreateCodeTemplate }: Readonly<{
   cities: readonly CityRow[];
   layouts: readonly LayoutRow[];
   template: string;
@@ -11,6 +11,9 @@ export function GameStartForm({ cities, layouts, template, worldRevision, busy, 
   onTemplateChange: (template: string) => void;
   onLayoutChange: (layout: string) => void;
   onSubmit: () => void;
+  codeGameCreating: boolean;
+  activeCodeTemplateId: string | null;
+  onCreateCodeTemplate: (templateId: string) => void;
 }>) {
   const hasLayout = layouts.some(layout => layoutSelectionKey(layout) === worldRevision);
   return <form className="game-start-form" onSubmit={event => {
@@ -42,7 +45,13 @@ export function GameStartForm({ cities, layouts, template, worldRevision, busy, 
         {entry.description && <p>{entry.description}</p>}
         <small>{[entry.genre, ...entry.tags].filter(Boolean).join(" · ")}</small>
         <small>兼容能力：{entry.requiredCapabilities.join(" / ")}</small>
-        <small>以此创建：Agent 调用 {entry.createTool}（template=&quot;{entry.templateId}&quot;）</small>
+        <div className="actions">
+          <button className="catalog-primary" type="button" disabled={busy}
+            onClick={() => onCreateCodeTemplate(entry.templateId)}>
+            {activeCodeTemplateId === entry.templateId ? "已创建（当前工作区）" : "以此创建"}
+          </button>
+        </div>
+        <small>创建后 Agent 任务链路切换到该工作区；也可让 Agent 调用 {entry.createTool}（template=&quot;{entry.templateId}&quot;）。</small>
       </li>)}</ul>
     </section>}
   </form>;

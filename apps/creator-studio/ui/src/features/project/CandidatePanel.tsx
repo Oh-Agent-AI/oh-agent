@@ -17,8 +17,9 @@ export function CandidatePanel(props: Readonly<{
   onAccept: () => void;
   onPlaytestRelease: () => void;
   onDirectPublish: () => void;
+  onRemixRelease: () => void;
 }>) {
-  const { candidate, busy, browserPreview, hasUncommittedProjectEdits, hasMounts, publishedReleaseId, onCreate, onTest, onAccept, onPlaytestRelease, onDirectPublish } = props;
+  const { candidate, busy, browserPreview, hasUncommittedProjectEdits, hasMounts, publishedReleaseId, onCreate, onTest, onAccept, onPlaytestRelease, onDirectPublish, onRemixRelease } = props;
   const unavailable = busy || browserPreview || hasUncommittedProjectEdits || !hasMounts;
   return <section className="candidate-panel" aria-label="Candidate 测试与发布">
     <div className="section-title">试玩与发布</div>
@@ -44,8 +45,9 @@ export function CandidatePanel(props: Readonly<{
       </details>
     </>}
     <details className="candidate-release-actions"><summary>其他发布操作</summary>
-      <div className="actions"><button className="secondary" disabled={!publishedReleaseId || busy || browserPreview} onClick={onPlaytestRelease}>试玩正式版</button><button className="secondary" disabled={unavailable || !canReleaseCandidate(candidate)} onClick={onDirectPublish}>直接发布 Release（旧路径）</button></div>
+      <div className="actions"><button className="secondary" disabled={!publishedReleaseId || busy || browserPreview} onClick={onPlaytestRelease}>试玩正式版</button><button className="secondary" disabled={unavailable || !canReleaseCandidate(candidate)} onClick={onDirectPublish}>直接发布 Release（旧路径）</button><button className="secondary" disabled={!publishedReleaseId || busy} onClick={onRemixRelease}>Remix 为新项目</button></div>
       {!canReleaseCandidate(candidate) && <p className="muted">直接发布与接受同一道宿主证据门禁：需要试玩证据一致且 Host 复核一致（host-verified）；请先走 Candidate 试玩并由宿主复核后接受发布。</p>}
+      {publishedReleaseId && <p className="muted">Remix 以已发布 Release 的冻结快照为蓝本克隆新可编辑草稿，原作与其它 Release 不受影响。</p>}
     </details>
   </section>;
 }

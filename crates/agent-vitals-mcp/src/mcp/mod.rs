@@ -270,6 +270,8 @@ pub fn dispatch_with_permissions_options(
         "im_publish" => city_im::run(args, data_home, allow_local_writes),
         "creator_city_create" | "creator_city_create_from_world" | "creator_city_edit_preview" | "creator_city_patch_preview" | "creator_city_list" | "creator_city_read" | "creator_city_diagnostics" | "creator_city_view" | "creator_city_view_status" | "creator_city_capture" | "creator_city_layout_read" | "creator_city_layout_save" | "creator_city_anchor_list" | "creator_city_anchor_upsert" | "creator_city_anchor_remove" | "creator_mount_list" | "creator_mount_bind" | "creator_mount_unbind" | "creator_game_bind_preview" | "creator_experience_build" | "creator_experience_list" | "creator_experience_install" | "creator_experience_uninstall" | "creator_layout_list" | "creator_project_list" | "creator_project_read" | "creator_operation_status" | "creator_playtest_history" | "creator_playtest_result" | "creator_playtest_cancel" | "creator_project_create"
         | "creator_game_preview" | "creator_scene_preview" | "creator_project_commit" | "creator_project_publish"
+        // PR14 Remix 入口：桥接宿主 creator.project.remix 克隆事务（写权限闸在 run() 内）。
+        | "creator_project_remix"
         | "creator_scene_describe" | "creator_scene_capture" | "creator_scene_inspect" | "creator_scene_validate" | "creator_capabilities_list"
         // PR12 统一创作模板目录：静态离线目录面，与 capabilities 同一模块与错误映射。
         | "creator_template_list"

@@ -1745,6 +1745,25 @@ fn run_city_test_snapshot(home: &Path, _owner: &str, _instance: &str, payload: &
     crate::creator_code_game::city_test_snapshot(home, payload)
 }
 
+/// PR14：Code Game 工作区创建的宿主面。单一实现 = MCP crate 的
+/// creator_code_project_create（模板允许清单、路径逃逸闸、PR02 operationId
+/// 回执/崩溃恢复全部同源）；本行只是把它接到 creator-studio 行表，让 UI 卡片
+/// 与 Agent 走同一条创建链、共享同一份回执与工作区目录。
+fn run_code_project_create(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    agent_vitals_mcp::mcp::dispatch_with_permissions_options("creator_code_project_create", payload, home, true, false)
+        .map_err(|error| match error.code {
+            "invalid_argument" => "creator_request_invalid",
+            "operation_id_conflict" => "creator_request_conflict",
+            "not_found" => "creator_template_not_found",
+            "storage_unavailable" | "data_unavailable" => "creator_store_unavailable",
+            _ => "code_game_state_unavailable",
+        })
+        .and_then(|value| {
+            let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            if ok { Ok(value["data"].clone()) } else { Err("code_game_state_unavailable") }
+        })
+}
+
 fn run_code_test_record(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     crate::creator_code_game::code_test_record(home, payload)
 }
@@ -2108,6 +2127,11 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.code.install.list", &[], &["cityId", "gameId", "limit"], run_install_list),
     // PR05：宿主冻结 City 快照的只读服务面（无渲染端依赖，不进 task/session 派发）。
     creator_row!("creator.code.test.city_snapshot", &["cityId", "cityRevision"], &[], run_city_test_snapshot),
+    // PR14 Remix/模板创建的宿主行：UI 卡片"以此创建"直达宿主（不再只是提示文案）。
+    // 实现直接复用 MCP crate 的 creator_code_project_create（单一写者：同样的
+    // PR02 operationId 回执、同一 state 目录），宿主行本身已在 creator-studio
+    // 行表权限治理内，故以 allow_local_writes=true 调用。
+    creator_row!("creator.code.project.create", &["template", "operationId"], &["title"], run_code_project_create),
     // PR06：无头测试记录的只读服务面（UI 证据中心经此回读 tests/<buildId>.json）。
     creator_row!("creator.code.test.record", &["buildId"], &[], run_code_test_record),
     creator_row!("creator.actor.register", &["storyId", "characterId", "sessionIdentifier", "allowedKinds", "maxIntentsPerWindow", "operationId"], &["sessionLabel"], run_actor_register),
