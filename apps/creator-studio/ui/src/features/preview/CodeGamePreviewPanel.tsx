@@ -10,8 +10,9 @@ export function CodeGamePreviewPanel(props: Readonly<{
   requestedBuildId?: string;
   requestedSourceCityId?: string;
   onMessage: (message: string) => void;
+  workspaceId: string | null;
 }>) {
-  const { request, browserPreview, requestedBuildId, requestedSourceCityId, onMessage } = props;
+  const { request, browserPreview, requestedBuildId, requestedSourceCityId, onMessage, workspaceId } = props;
   const [builds, setBuilds] = useState<readonly CodeBuildRowV1[]>([]);
   const [buildId, setBuildId] = useState("");
   const [cities, setCities] = useState<readonly LibraryCityRow[]>([]);
@@ -19,6 +20,7 @@ export function CodeGamePreviewPanel(props: Readonly<{
   const [status, setStatus] = useState<CodePreviewStatusV1 | null>(null);
   const [evidence, setEvidence] = useState<CodeStoryEvidenceV1 | null>(null);
   const [busy, setBusy] = useState(false);
+  const [building, setBuilding] = useState(false);
   const [error, setError] = useState("");
   const loadBuilds = useCallback(async () => {
     try {
@@ -36,6 +38,24 @@ export function CodeGamePreviewPanel(props: Readonly<{
       setError("");
     } catch (cause) { setError(cause instanceof Error ? cause.message : "creator_city_list_unavailable"); }
   }, [request]);
+  // PR14 收官：基线构建入口（宿主行 creator.code.build 复用 MCP creator_code_build——
+  // Agent 与 UI 同一实现、同一 sealed buildId 语义）。构建成功后刷新构建列表。
+  const buildBaseline = async () => {
+    if (!workspaceId || building) return;
+    setBuilding(true);
+    try {
+      const built = await request<{ status: string; buildId: string | null }>("creator.code.build", { workspaceId });
+      if (built.status === "succeeded" && built.buildId) {
+        onMessage(`基线构建完成（${built.buildId.slice(0, 12)}…）；可在上方选择该构建启动独立预览。`);
+        await loadBuilds();
+        setBuildId(built.buildId);
+      } else {
+        const diagnostic = (built as unknown as { diagnostics?: Array<{ message?: string }> }).diagnostics?.[0]?.message;
+        onMessage(`构建未成功：${diagnostic ?? built.status}`);
+      }
+    } catch (cause) { onMessage(`构建失败（${cause instanceof Error ? cause.message : "creator_code_build_failed"}）。`); }
+    finally { setBuilding(false); }
+  };
   const refreshStatus = useCallback(async () => {
     // 身份隔离：只按本 workspace 绑定的 previewId 走宿主权威状态；未绑定时呈现
     // "未在运行"，绝不回退到最后写入者获胜的 legacy 全局投影。
@@ -120,7 +140,7 @@ export function CodeGamePreviewPanel(props: Readonly<{
       {cities.map(city => <option key={city.cityId} value={city.cityId}>{city.name} · 版本 {city.revision}</option>)}
     </select></label>
     {selected && <code>{selected.buildId} · {selected.byteLength ?? 0} bytes</code>}
-    <div className="actions"><button className="secondary" disabled={busy} onClick={() => { void loadBuilds(); void loadCities(); }}>刷新构建与来源</button>
+    <div className="actions">{workspaceId && <button disabled={busy || building} onClick={() => void buildBaseline()}>{building ? "构建中…" : "构建工作区"}</button>}<button className="secondary" disabled={busy} onClick={() => { void loadBuilds(); void loadCities(); }}>刷新构建与来源</button>
       <button disabled={busy || !buildId || !sourceCityId || browserPreview} onClick={() => void start()}>打开独立 Preview</button>
       {status && canStopCodePreview(status) && <button className="secondary" disabled={busy || browserPreview} onClick={() => void stop()}>停止 Preview</button>}</div>
     {browserPreview && <p className="muted">浏览器使用合成数据，不读取真实构建；请在桌面应用中预览。</p>}

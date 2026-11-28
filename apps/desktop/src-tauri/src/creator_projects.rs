@@ -1749,6 +1749,26 @@ fn run_city_test_snapshot(home: &Path, _owner: &str, _instance: &str, payload: &
 /// creator_code_project_create（模板允许清单、路径逃逸闸、PR02 operationId
 /// 回执/崩溃恢复全部同源）；本行只是把它接到 creator-studio 行表，让 UI 卡片
 /// 与 Agent 走同一条创建链、共享同一份回执与工作区目录。
+/// PR14：基线构建宿主面。构建是 Agent/创作者链路的一部分：MCP creator_code_build
+/// 的实现（墙钟预算、sealed buildId、候选分支）经宿主行暴露给 UI 构建按钮，
+/// 错误映射与 run_code_project_create 同风格。
+fn run_code_build(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    agent_vitals_mcp::mcp::dispatch_with_permissions_options("creator_code_build", payload, home, true, false)
+        .map_err(|error| match error.code {
+            "invalid_argument" => "creator_request_invalid",
+            "workspace_revision_conflict" => "revision_conflict",
+            "game_build_failed" => "game_build_failed",
+            "game_execution_timeout" => "game_execution_timeout",
+            "not_found" => "creator_project_not_found",
+            "storage_unavailable" | "data_unavailable" => "creator_store_unavailable",
+            _ => "code_game_state_unavailable",
+        })
+        .and_then(|value| {
+            let ok = value.get("ok").and_then(Value::as_bool).unwrap_or(false);
+            if ok { Ok(value["data"].clone()) } else { Err("game_build_failed") }
+        })
+}
+
 fn run_code_project_create(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
     agent_vitals_mcp::mcp::dispatch_with_permissions_options("creator_code_project_create", payload, home, true, false)
         .map_err(|error| match error.code {
@@ -2132,6 +2152,8 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     // PR02 operationId 回执、同一 state 目录），宿主行本身已在 creator-studio
     // 行表权限治理内，故以 allow_local_writes=true 调用。
     creator_row!("creator.code.project.create", &["template", "operationId"], &["title"], run_code_project_create),
+    // PR14 收官：基线构建的宿主行（复用 MCP creator_code_build——Agent 与 UI 同一实现）。
+    creator_row!("creator.code.build", &["workspaceId"], &["candidateId"], run_code_build),
     // PR06：无头测试记录的只读服务面（UI 证据中心经此回读 tests/<buildId>.json）。
     creator_row!("creator.code.test.record", &["buildId"], &[], run_code_test_record),
     creator_row!("creator.actor.register", &["storyId", "characterId", "sessionIdentifier", "allowedKinds", "maxIntentsPerWindow", "operationId"], &["sessionLabel"], run_actor_register),

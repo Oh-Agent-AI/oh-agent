@@ -523,6 +523,8 @@ export function CreatorStudioApp() {
         "creator.code.project.create", { template: templateId, operationId, title: templateId });
       setCodeGameWorkspace({ ...created, template: templateId });
       setMessage(`Code Game 工作区已创建（${created.workspaceId}）；Agent 任务链路已切换到该工作区。`);
+      // PR14 收官：创建后直接进入工作区面板（构建/预览入口），不再停留在目录页。
+      openWorkspacePanel("code");
     } catch (error) { setMessage(error instanceof Error ? error.message : "creator_code_create_failed"); }
     finally { setBusy(false); }
   };
@@ -1566,7 +1568,7 @@ export function CreatorStudioApp() {
         toolPanel={<WorkspaceContentDrawer open={contentOpen} panel={activePanel} onClose={() => setContentOpen(false)}
           onSelect={tool => tool === "story" ? openStoryTool() : openWorkspacePanel(tool)}>
 
-        {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} onMessage={setMessage} />}
+        {activePanel === "code" && <CodeGamePreviewPanel request={creatorRequest} browserPreview={browserPreview} requestedBuildId={codePreviewBuildId} requestedSourceCityId={codePreviewSourceCityId} workspaceId={codeGameWorkspace?.workspaceId ?? null} onMessage={setMessage} />}
         {activePanel === "project" && <ProjectPanel
           cities={cities} draftCityView={draftCityView} citiesLoading={citiesLoading} citiesError={citiesError} citiesCursor={citiesCursor}
           busy={busy} browserPreview={browserPreview} packageInspection={packageInspection} installedPackages={installedPackages}

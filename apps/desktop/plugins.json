@@ -606,7 +606,8 @@
         "creator.code.project.create",
         "creator.project.remix",
         "creator.game.binding.propose",
-        "creator.game.binding.check"
+        "creator.game.binding.check",
+        "creator.code.build"
       ],
       "hostEvents": [
         "plugin.event"
@@ -619,6 +620,7 @@
         "creator.game.intent.simulate": { "requestBytes": 16384, "responseBytes": 65536 },
         "creator.code.test.city_snapshot": { "requestBytes": 16384, "responseBytes": 1048576 },
         "creator.code.project.create": { "requestBytes": 4096, "responseBytes": 65536 },
+        "creator.code.build": { "requestBytes": 4096, "responseBytes": 262144 },
         "creator.story.project.create": {
           "requestBytes": 393216,
           "responseBytes": 65536

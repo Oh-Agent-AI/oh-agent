@@ -797,6 +797,10 @@ fn poll_plugin_call_queue(app: &tauri::AppHandle) {
             let payload = call.get("payload").filter(|value| value.is_object()).cloned().unwrap_or_else(|| json!({}));
             let result = if method == "creator.code.test.city_snapshot" {
                 crate::creator_code_game::city_test_snapshot(&home, &payload)
+            } else if method == "creator.code.build" {
+                // PR14：基线构建（MCP crate 实现；build 返回 data 直接回执）。
+                crate::creator_projects::dispatch_as(&home, crate::creator_projects::LOCAL_CREATOR_OWNER,
+                    "studio-code-build", &method, &payload)
             } else if method == "creator.code.project.create" {
                 // PR14：模板创建（MCP crate 实现；响应信封解包成 data 直接回执，
                 // 与行表其他方法同形）。宿主行权限治理内 = allow_local_writes；
@@ -922,6 +926,8 @@ fn headless_creator_methods() -> Vec<String> {
         // PR14 Code Game 模板创建：UI 卡片"以此创建"与 Agent 共用（实现复用 MCP
         // crate 的 creator_code_project_create，单一写者——同一份回执与工作区）。
         "creator.code.project.create",
+        // PR14 收官：基线构建（UI 构建按钮与 Agent 同链路）。
+        "creator.code.build",
         // pull 模式 submit 的服务端复核：纯宿主本地检查（内存 preview 表），
         // Studio 不在场时也必须可作答，否则任何 Agent 的提交都会 15s 超时。
         "creator.task.preview.verify",
@@ -1115,7 +1121,7 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         // PR14：Remix 克隆同管线（纯宿主本地事务，无 headless 特例）。
         | "creator.project.remix"
         // PR14：Code Game 模板创建同管线（MCP crate 实现，宿主行转发）。
-        | "creator.code.project.create"
+        | "creator.code.project.create" | "creator.code.build"
         | "creator.task.preview.verify"
         // PR05：宿主本地冻结快照服务走 dispatch_as 的 creator_row（与 Studio 在场
         // 时同一条宿主管线），无 headless 特例。PR06 记录读面同管线。
