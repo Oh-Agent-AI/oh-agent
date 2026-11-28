@@ -736,6 +736,11 @@ fn validate_playtest_actions(actions: &Value) -> Result<(Vec<String>, usize), St
 /// MCP 直写面同款校验（creator_code_playtest.rs 镜像同一规则）：预览必须存在
 /// 且 run 处于 starting/running；会话终态或过期则开新会话；预算/窗口上限在
 /// 这里收口。返回回执（sessionId/seq/预算状态）。
+///
+/// PR08 注：当前生产写路径是 MCP 侧直写会话文件（creator_code_playtest.rs 自带
+/// 同款校验），serve 路径读取时再独立校验动作词表——本函数是同一文件契约的宿主
+/// 侧参考实现，仅由测试调用（钉住预算/队列/回执语义），供未来宿主内写路径复用。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn playtest_input(home: &Path, preview_id: &str, actions: &Value, hold_ms: Option<u64>, now: u64) -> Result<Value, String> {
     let (_keys, count) = validate_playtest_actions(actions)?;
     let hold = hold_ms.unwrap_or(0);
@@ -800,6 +805,10 @@ pub(crate) fn playtest_input(home: &Path, preview_id: &str, actions: &Value, hol
 
 /// MCP stop 面：终态化会话（清空 pending），下一次轮询由 serve 发出一次
 /// playtest.end，渲染端释放仍按下的动作。无会话是幂等成功。
+///
+/// PR08 注：同 playtest_input——生产 stop 路径在 MCP 侧直写，本函数是同一
+/// 契约的宿主侧参考实现，仅由测试调用。
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn playtest_stop(home: &Path, preview_id: &str, now: u64) -> Result<Value, String> {
     if !valid_preview_id(preview_id) { return Err("code_game_preview_request_invalid".into()); }
     let _guard = preview_io_lock().lock().unwrap_or_else(|poisoned| poisoned.into_inner());
