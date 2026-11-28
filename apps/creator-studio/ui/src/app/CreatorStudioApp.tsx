@@ -515,7 +515,9 @@ export function CreatorStudioApp() {
   // 成功后任务链路切到该工作区（code-game scope）。
   const createCodeGame = async (templateId: string) => {
     setBusy(true); setMessage("");
-    const operationId = `code-create:${crypto.randomUUID()}`;
+    // MCP creator_code_project_create 的 operationId 词表不允许 `:`（回执文件名防注入），
+    // 与宿主 valid_id 词表不同——统一用连字符前缀。
+    const operationId = `code-create-${crypto.randomUUID()}`;
     try {
       const created = await creatorRequest<{ workspaceId: string; projectId: string; gameId: string; gameRevision: string }>(
         "creator.code.project.create", { template: templateId, operationId, title: templateId });
@@ -529,7 +531,7 @@ export function CreatorStudioApp() {
   // 列表并打开新草稿。
   const remixRelease = async (releaseId: string) => {
     setBusy(true); setMessage("");
-    const operationId = `remix:${crypto.randomUUID()}`;
+    const operationId = `remix-${crypto.randomUUID()}`;
     try {
       const remixed = await creatorRequest<{ projectId: string }>("creator.project.remix", { sourceReleaseId: releaseId, operationId });
       await refreshProjectCatalog();
