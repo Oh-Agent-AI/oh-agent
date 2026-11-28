@@ -308,6 +308,42 @@ mod tests {
         let _ = std::fs::remove_dir_all(home);
     }
 
+    /// PR13 §7.2 末行钉子：卸载游戏/内容包只删安装关系与包字节，City 世界对象
+    /// （City 行 + 作用域布局快照及其锚点/几何）从不被卸载路径触碰。
+    #[test]
+    fn uninstall_keeps_city_world_objects_intact() {
+        let home = home();
+        let raw = fixture();
+        let digest = "sha256:432a5a6173179521080db1ae9aa71a0d49e41d27681ed2b5ce0b62ba87383682";
+        install_inspected_world(&home, &raw, "example.desert", "1.0.0", digest).unwrap();
+        let city = crate::creator_cities::create_city(&home, "owner", "operation-keep", "Keep City", 42, &json!({"id":"desert"})).unwrap();
+        let city_id = city["cityId"].as_str().unwrap().to_owned();
+        let layout = json!({"schemaVersion":1,"id":"layout-uninstall-keep","coordinateSystem":"city-local-m-v1",
+            "anchors":[{"id":"keep-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"city-road-node:a"},
+                {"id":"keep-gate:1","kind":"zone","capabilities":["drive"],"geometryRef":"city-road-edge:ab:midpoint"}],"links":[]});
+        crate::creator_city_patch::store_scoped_city_layout(&home, &json!({"schemaVersion":2,"cityId":city_id,
+            "cityRevision":0,"worldRevision":"world-keep","seed":42,"layout":layout})).unwrap();
+        let anchors_before: i64 = database(&home).unwrap()
+            .query_row("SELECT COUNT(*) FROM creator_city_layouts_v2 WHERE city_id=?1", [&city_id], |row| row.get(0)).unwrap();
+        assert_eq!(anchors_before, 1);
+        // 卸载该内容包（未被本 City 引用 → 允许）：只删包行与包目录。
+        assert_eq!(uninstall(&home, "example.desert", "1.0.0").unwrap()["removed"], true);
+        let db = database(&home).unwrap();
+        assert_eq!(list_installed(&home).unwrap()["packages"].as_array().unwrap().len(), 0);
+        // City 世界对象原样：行、revision、布局快照全在，锚点逐字未动。
+        let (revision, document_raw): (u64, String) = db.query_row("SELECT revision,document_json FROM creator_cities WHERE city_id=?1", [&city_id],
+            |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(revision, 0);
+        let document: Value = serde_json::from_str(&document_raw).unwrap();
+        assert_eq!(document["cityId"], json!(city_id));
+        assert_eq!(document["seed"], json!(42));
+        let snapshot_raw: String = db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1", [&city_id], |row| row.get(0)).unwrap();
+        let snapshot: Value = serde_json::from_str(&snapshot_raw).unwrap();
+        assert_eq!(snapshot["layout"]["anchors"].as_array().unwrap().len(), 2);
+        assert_eq!(snapshot["layout"]["anchors"][0]["id"], "keep-spawn:a");
+        let _ = std::fs::remove_dir_all(home);
+    }
+
     #[test]
     fn reinstall_rejects_corrupted_stored_package() {
         let home = home();

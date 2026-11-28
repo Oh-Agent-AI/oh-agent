@@ -56,6 +56,8 @@ export function useCreatorHostBridge(options: CreatorHostBridgeOptions) {
       "creator.vehicle.preview", "creator.vehicle.define", "creator.vehicle.inspect",
       "creator.city.anchor.list", "creator.city.anchor.upsert", "creator.city.anchor.remove",
       "creator.mount.list", "creator.mount.bind", "creator.mount.unbind", "creator.game.bind.preview",
+      // PR13 §7 绑定 Resolver：只读提案/迁移检查经 Studio 透传到宿主 dispatch（无写入）。
+      "creator.game.binding.propose", "creator.game.binding.check",
       "creator.experience.build", "creator.experience.list", "creator.experience.install", "creator.experience.uninstall",
       // Story Project Registry（RFC V3 §12，S-2+S-3）：MCP 的 story.* 调用经 Studio
       // 透传到宿主 dispatch；写授权仍由宿主 dispatch 行与 MCP 闸各自执行。

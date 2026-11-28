@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, type Dispatch, type SetStateAction } from "react";
 import type { Project } from "../../contracts/creatorStudio";
-import { mountChoices, mountSlotLabel, readMountBindings } from "./mountEditorModel";
+import { mountChoices, mountSlotDiagnostics, mountSlotLabel, readMountBindings } from "./mountEditorModel";
 
 import { VenueMap, type VenueGeometry, type VenueRoad } from "./VenueMap";
 
@@ -63,12 +63,19 @@ export function GameEditorPanel(props: Readonly<{
           <div className="section-title">玩法场地</div>
           <p className="muted">在地图上选择起点和目标，按经过顺序布置，再校验并保存。</p>
           {!props.venueGeometry && <p className="muted">等项目对应的城市场景就绪后，即可在地图上选点。</p>}
+          {(() => {
+            // PR13 §7 绑定诊断：语义化、画布可读（槽位名 + 点位引用），替代裸参数报错。
+            const diagnostics = mountSlotDiagnostics(layout, game, bindings);
+            if (!diagnostics.length) return null;
+            return <ul className="anchor-diagnostics" aria-label="绑定诊断">
+              {diagnostics.map((diagnostic, index) => <li key={index} className="anchor-warning">{diagnostic.message}</li>)}
+            </ul>;
+          })()}
           {props.venueGeometry && choices.slots.map(slot => {
             const raw = bindings?.[slot.id];
             const selected = Array.isArray(raw) ? raw.filter((id): id is string => typeof id === "string") : [];
             return <fieldset key={slot.id} className="anchor-picker">
               <legend>{mountSlotLabel(slot.id)} · 已选 {selected.length} 个（需 {slot.min}–{slot.max} 个）</legend>
-              {slot.anchors.length < slot.min && <p className="anchor-warning">这个场地的可用点位不足，请选择包含所需点位的 City。</p>}
               <VenueMap geometry={props.venueGeometry!} roads={props.venueRoads} entries={choices.entries} targets={slot.anchors}
                 entryId={entryAnchorId} orderedIds={selected} disabled={busy}
                 onEntry={id => { setEntryAnchorId(id); setPreviewId(null); setPreviewKind(null); }}

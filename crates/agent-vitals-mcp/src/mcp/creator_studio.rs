@@ -204,6 +204,10 @@ pub fn specs() -> Vec<ToolSpec> {
         spec("creator_mount_bind", "Bind a typed mount to a Creator project from the project's immutable layout/game refs. Slot counts and anchor capabilities (including fly) are checked; caller never supplies digests. Requires --allow-local-writes and Studio, revision CAS and operationId.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":operation_id_prop(),"entryAnchorId":{"type":"string","minLength":1,"maxLength":128},"bindings":{"type":"object"},"vehicleId":{"type":"string","minLength":1,"maxLength":128},"parameterOverrides":{"type":"object"},"operationId":operation_id_prop()}), &["projectId","baseRevision","mountId","entryAnchorId","bindings","operationId"]),
         spec("creator_mount_unbind", "Remove a typed mount from a Creator project. Requires --allow-local-writes, Studio, revision CAS and operationId.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":{"type":"string","minLength":1,"maxLength":128},"operationId":operation_id_prop()}), &["projectId","baseRevision","mountId","operationId"]),
         spec("creator_game_bind_preview", "Validate a typed mount against the current project layout/game without writing: slot counts, anchor existence and required capabilities (including fly). Reachability/visual checks that need the City runtime are reported as unchecked, never as passed.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"mountId":{"type":"string","minLength":1,"maxLength":128},"entryAnchorId":{"type":"string","minLength":1,"maxLength":128},"bindings":{"type":"object"},"vehicleId":{"type":"string","minLength":1,"maxLength":128},"parameterOverrides":{"type":"object"}}), &["projectId","baseRevision","mountId","entryAnchorId","bindings"]),
+        // PR13 §7 绑定 Resolver（City Binding Resolver / Migration）：提案与迁移检查
+        // 都只读——提案是临时未确认结果，确认仍走 creator_mount_bind（宿主权威校验）。
+        spec("creator_game_binding_propose", "Compute a read-only GameBindingProposal (City Binding Resolver, PR13 §7): resolve the declarative game's slot requirements against the anchors of a specific City revision and return {proposalId, cityId, cityRevision, worldRevision-scoped bindings (slot → ranked candidate anchor ids), entry candidates, semantic canvas-ready diagnostics, status proposed|validated}. proposalId is the digest of (game identity, cityId, cityRevision, entryAnchorId, bindings) — reference it when confirming; nothing is persisted. The proposal is advisory input for creator_mount_bind, which remains the authoritative validation + write. `cityId`/`cityRevision` default to the project's pinned City; pass them explicitly to propose against the user-selected revision (e.g. after a City update). Read-only; legacy layout projects resolve against their pinned snapshot and are labelled cityScope:\"legacy\".", json!({"projectId":project_id_prop(),"cityId":{"type":"string","minLength":1,"maxLength":128},"cityRevision":revision_prop()}), &["projectId"]),
+        spec("creator_game_binding_check", "Read-only migration check for an installed declarative game's mounts (PR13 §7.2 matrix): compares the project's pinned City revision against the City's current revision and re-validates every mount binding against the new layout. Returns status current|city_updated, mountReuse, per-slot ok|needs_repair classification with semantic diagnostics and ranked repair candidates, game-identity handling (digest changed but slot contracts still match → reusable; slot set drifted → rebind_required), and migration.kind reuse|reconfirm|needs_repair|rebind_required with a proposalId for the new revision when reconfirmation applies. Advisory only: it never writes and never auto-migrates; enforcement is the release's frozen City scope plus the mount.bind revision guard (creator_binding_city_moved). Pass expectedCityRevision as a CAS against the City's current revision. Read-only.", json!({"projectId":project_id_prop(),"expectedCityRevision":revision_prop()}), &["projectId"]),
         spec("creator_vehicle_list", "List the built-in vehicle presets (flapping/fixed-wing) and the version-1 vehicle contract bounds for Creator flight projects. Static contract served without Studio; copy a preset's physics into creator_vehicle_define and adjust bounded parameters only.", json!({"limit":{"type":"integer","minimum":1,"maximum":50}}), &[]),
         spec("creator_vehicle_preview", "Dry-run one vehicle definition against a Creator project: the official Studio validates the full VehicleProfileV1 via city-sdk and the host binds that verdict server-side, returning diagnostics plus a deterministic estimatedPerformance projection computed by the official Studio from the city-sdk `estimateVehiclePerformanceV1` (the host itself does not derive it). Returns a short-lived previewId bound to the active Studio instance and base revision; commit it with creator_project_commit, or define directly with creator_vehicle_define. `vehicle` accepts either the define-shaped object (vehicleId/label/flightModel/physics/bounds/modelAssetId) or a full profile with camera.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"vehicle":{"type":"object"},"operationId":operation_id_prop()}), &["projectId","baseRevision","vehicle"]),
         spec("creator_vehicle_define", "Define (upsert) one flight vehicle in a Creator project. `physics` keys/ranges and cross-field ratios come from creator_vehicle_list; `camera` is derived deterministically and never accepted. `modelAssetId` must be null (procedural placeholder) or a project asset id — local paths and raw file bytes are never accepted. Requires `data-mcp serve --allow-local-writes` and the official Creator Studio plugin to be open.", json!({"projectId":project_id_prop(),"baseRevision":revision_prop(),"vehicleId":{"type":"string","minLength":1,"maxLength":128},"label":{"type":"string","minLength":1,"maxLength":128},"flightModel":{"type":"string","enum":["fixed-wing","flapping","vtol"]},"physics":{"type":"object"},"bounds":{"type":"object","properties":{"halfLengthM":{"type":"number"},"halfWidthM":{"type":"number"},"halfHeightM":{"type":"number"}},"required":["halfLengthM","halfWidthM","halfHeightM"],"additionalProperties":false},"modelAssetId":{"type":["string","null"]},"operationId":operation_id_prop()}), &["projectId","baseRevision","vehicleId","label","flightModel","physics","bounds","operationId"]),
@@ -294,6 +298,8 @@ fn call_error(code: &str) -> ToolError {
         "creator_store_corrupt" => ToolError::new("data_unavailable", "Creator storage failed its integrity check. Back up state/creator and rebuild it from facts."),
         "creator_store_migration_failed" => ToolError::new("data_unavailable", "Creator storage schema migration failed; check the local app log for the failing stage."),
         "creator_mount_parameter_not_found" | "creator_mount_parameter_unknown" | "creator_mount_parameter_invalid" | "creator_mount_parameter_range" | "creator_mount_parameter_binding_mismatch" => ToolError::new("invalid_argument", code),
+        // PR13 §7 绑定版本闸：City 已走到新 revision 时拒绝在旧钉住快照上写入。
+        "creator_binding_city_moved" => ToolError::new("invalid_argument", "The City has moved to a newer revision than the revision this project is pinned to; re-propose bindings with creator_game_binding_propose against the current revision and bind through a project bound to it (creator_binding_city_moved)."),
         value if value.starts_with("creator_scene_") || value.starts_with("creator_mount_") || value == "creator_skin_not_found" || value == "creator_game_invalid" || value == "creator_game_operation_unsupported" => ToolError::new("invalid_argument", "Creator payload failed schema or budget validation."),
         "creator_vehicle_invalid" => ToolError::new("invalid_argument", "Vehicle profile failed structural validation; physics keys must match the declared flight model (see creator_vehicle_list) and camera is never accepted on define."),
         "creator_vehicle_out_of_bounds" => ToolError::new("invalid_argument", "A vehicle physics/camera/bounds value is outside the version-1 contract range; check creator_vehicle_list physicsBounds/cameraBounds/boundsLimits."),
@@ -937,6 +943,19 @@ pub fn run(name: &str, args: &Value, data_home: &Path, allow_local_writes: bool)
             for key in ["vehicleId", "parameterOverrides"] { if let Some(value) = args.get(key) { payload[key] = value.clone(); } }
             call(data_home, "creator.game.bind.preview", &payload, 15_000)
         }
+        // PR13 §7 绑定 Resolver 只读面：不设 --allow-local-writes 闸；无 Studio 时走
+        // headless 宿主管线（plugin_unavailable 只发生在整个宿主不在场时）。
+        "creator_game_binding_propose" => {
+            let mut payload = json!({"projectId":required_string(args,"projectId")?});
+            if let Some(city_id) = optional_nonempty_string(args, "cityId")? { payload["cityId"] = json!(city_id); }
+            if let Some(revision) = optional_u64(args, "cityRevision")? { payload["cityRevision"] = json!(revision); }
+            call(data_home, "creator.game.binding.propose", &payload, 15_000)
+        }
+        "creator_game_binding_check" => {
+            let mut payload = json!({"projectId":required_string(args,"projectId")?});
+            if let Some(revision) = optional_u64(args, "expectedCityRevision")? { payload["expectedCityRevision"] = json!(revision); }
+            call(data_home, "creator.game.binding.check", &payload, 15_000)
+        }
         "creator_vehicle_list" => {
             // 静态契约发现：与 creator_capabilities_list 同样离线，Studio 关闭时可用。
             // `limit` 在 schema 里是可选（presets 只有两个）：缺省 16，超出按上限截断而不是拒调用。
@@ -1199,5 +1218,47 @@ mod capture_tests {
         let error = run("creator_story_run_start", &json!({"cityId":"city-1","storyId":"story-1"}), &home, false).unwrap_err();
         assert_eq!(error.code, "permission_denied");
         std::fs::remove_dir_all(home).ok();
+    }
+
+    /// PR13 §7 绑定 Resolver：提案/迁移检查只读契约 + bind 版本闸错误码映射。
+    #[test]
+    fn binding_resolver_tools_are_registered_read_only() {
+        let specs = specs();
+        for name in ["creator_game_binding_propose", "creator_game_binding_check"] {
+            let spec = specs.iter().find(|spec| spec.name == name).unwrap_or_else(|| panic!("{name} spec must exist"));
+            assert_eq!(spec.input_schema.get("additionalProperties"), Some(&Value::Bool(false)), "{name}");
+            assert!(spec.description.contains("Read-only") || spec.description.contains("read-only"), "{name} must declare read-only semantics");
+            // propose 必须写明提案→确认链（确认走 creator_mount_bind，宿主权威）；
+            // check 必须写明只读 advisory 的强制面（bind 版本闸 + release 冻结 pin）。
+            if name == "creator_game_binding_propose" {
+                assert!(spec.description.contains("creator_mount_bind"), "{name} must document the propose→confirm chain");
+            } else {
+                assert!(spec.description.contains("creator_binding_city_moved"), "{name} must document the enforcement surface");
+            }
+        }
+        // proposalId 配方在工具描述里可发现（digest of game identity + city 锚定 + bindings）。
+        let propose = specs.iter().find(|spec| spec.name == "creator_game_binding_propose").expect("propose spec");
+        assert!(propose.description.contains("proposalId"), "{}", propose.description);
+        // 必填参数缺失在参数校验阶段拒绝，不向插件转发；两个工具都不设 --allow-local-writes 闸。
+        let home = std::env::temp_dir().join(format!("mcp-binding-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&home).ok();
+        for (name, args) in [
+            ("creator_game_binding_propose", json!({})),
+            ("creator_game_binding_check", json!({})),
+        ] {
+            let error = run(name, &args, &home, false).unwrap_err();
+            assert_eq!(error.code, "invalid_argument", "{name} accepted {args}");
+        }
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    /// PR13 §7 绑定版本闸：City 走到新 revision 后在旧钉住快照上写入 → 稳定
+    /// invalid_argument + 可执行的下一步建议（重提案 + 指向当前 revision）。
+    #[test]
+    fn binding_city_moved_error_is_actionable() {
+        let error = call_error("creator_binding_city_moved");
+        assert_eq!(error.code, "invalid_argument");
+        assert!(error.message.contains("creator_game_binding_propose"), "{}", error.message);
+        assert!(error.message.contains("creator_binding_city_moved"), "{}", error.message);
     }
 }

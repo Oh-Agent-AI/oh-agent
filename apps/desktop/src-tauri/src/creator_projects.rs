@@ -2167,6 +2167,9 @@ static DISPATCH_ROWS: &[CreatorMethodRow] = &[
     creator_row!("creator.mount.unbind", &["projectId", "baseRevision", "mountId", "operationId"], &[], run_mount_unbind),
     creator_row!("creator.mount.list", &["projectId"], &["revision"], run_mount_list),
     creator_row!("creator.game.bind.preview", &["projectId", "baseRevision", "mountId", "entryAnchorId", "bindings"], &["vehicleId", "parameterOverrides"], run_mount_bind_preview),
+    // PR13 §7 绑定提案与迁移检查：只读 Resolver（无 --allow-local-writes 闸、无写入）。
+    creator_row!("creator.game.binding.propose", &["projectId"], &["cityId", "cityRevision"], run_game_binding_propose),
+    creator_row!("creator.game.binding.check", &["projectId"], &["expectedCityRevision"], run_game_binding_check),
     creator_row!("creator.city.list", &["limit"], &["cursor"], run_city_list),
     creator_row!("creator.city.read", &["cityId"], &["revision"], run_city_read),
     creator_row!("creator.city.world_package.read", &["cityId"], &[], run_city_world_package_read),
@@ -4828,6 +4831,13 @@ fn preview_typed_mount(home: &Path, project_id: &str, base_revision: u64, payloa
         |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
     if revision != base_revision { return Err("revision_conflict"); }
     let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    // PR13 §7：与 bind 同一道 City revision 闸——preview 不验证一条确认必然拒绝的绑定。
+    if let Some(city_id) = document.get("cityId").and_then(Value::as_str) {
+        let pinned = document.get("cityRevision").and_then(Value::as_u64).ok_or("creator_layout_scope_mismatch")?;
+        let current: u64 = db.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+            .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
+        if current != pinned { return Err("creator_binding_city_moved"); }
+    }
     let (mount, coverage) = build_typed_mount(&document, mount_id, entry, bindings, vehicle, overrides)?;
     Ok(json!({"projectId":project_id,"baseRevision":base_revision,"mount":mount,"coverage":coverage,
         "checks":{"slotCoverage":"passed","capability":"passed","reachability":"unchecked","visual":"unchecked"}}))
@@ -4849,6 +4859,17 @@ pub(crate) fn bind_typed_mount(home: &Path, owner: &str, project_id: &str, base_
         |row| Ok((row.get(0)?,row.get(1)?))).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
     if revision != base_revision { return Err("revision_conflict"); }
     let mut document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    // PR13 §7 绑定版本闸（只作用于独立 City 项目）：绑定校验发生在项目钉住的布局
+    // 快照上，而该快照对应创建时的 cityRevision。City 头已走到其它 revision 时拒绝
+    // 写入——在旧快照上继续绑会产出「只能在冻结旧世界运行」的 mount，让 Agent 误以
+    // 为绑到了当前 City（旧绑定不得冒充新绑定）。改绑新版本走绑定提案
+    // （creator.game.binding.propose 指定新版 revision）+ 绑定新版 City 的新项目。
+    if let Some(city_id) = document.get("cityId").and_then(Value::as_str) {
+        let pinned = document.get("cityRevision").and_then(Value::as_u64).ok_or("creator_layout_scope_mismatch")?;
+        let current: u64 = tx.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+            .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
+        if current != pinned { return Err("creator_binding_city_moved"); }
+    }
     let (mount, coverage) = build_typed_mount(&document, mount_id, entry, bindings, vehicle, overrides)?;
     let mounts = document.as_object_mut().ok_or("creator_project_invalid")?.entry("mounts").or_insert_with(|| json!([]));
     let mounts = mounts.as_array_mut().ok_or("creator_project_invalid")?;
@@ -4911,6 +4932,326 @@ fn list_typed_mounts(home: &Path, project_id: &str, expected_revision: Option<u6
     Ok(json!({"projectId":project_id,"revision":revision,"gameType":game_type_for_document(&document),
         "vehicleId":document.get("vehicleId").cloned().unwrap_or(Value::Null),
         "mounts":document.get("mounts").cloned().unwrap_or_else(|| json!([]))}))
+}
+
+// ── City Binding Resolver / Migration（PR13 §7）──
+// 绑定提案（GameBindingProposal）与迁移检查是**只读** Resolver：从游戏 slots 需求与
+// 指定 City revision 的锚点快照产出「槽位 → 候选锚点（按快照内文档序稳定排序）」与
+// 语义化、画布可读的诊断（不含裸能力键 JSON 或坐标；锚点 id 仅作引用）。提案是临时、
+// 未确认的结果，不是已安装 Mount；确认走既有 creator.mount.bind（宿主权威校验 + 写入）。
+// proposalId = digest(canonical_json({gameId, gameDigest, cityId, cityRevision,
+// entryAnchorId, bindings}))，确认方可引用；不落库（每次按需计算）。
+// 迁移矩阵（§7.2）的强制面：release 冻结 cityId/cityRevision/layout/worldRevision，
+// creator_playtest::release_city_scope 按冻结快照作答（历史 run 永远回放冻结世界，
+// 旧绑定不会冒充新绑定）；本侧不做任何自动迁移写——Mount 只经 bind/unbind 变更。
+
+/// Resolver 锚点投影（保序）：(id, kind, capabilities)，来自布局快照的 anchors 数组。
+fn resolver_anchor_map(layout: &Value) -> Result<Vec<(String, String, Vec<String>)>, &'static str> {
+    let anchors = layout.get("anchors").and_then(Value::as_array).ok_or("creator_layout_snapshot_invalid")?;
+    let mut map = Vec::new();
+    for anchor in anchors {
+        let id = anchor.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).ok_or("creator_layout_snapshot_invalid")?;
+        let kind = anchor.get("kind").and_then(Value::as_str).unwrap_or_default().to_owned();
+        let capabilities = anchor.get("capabilities").and_then(Value::as_array).map(|items|
+            items.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+        map.push((id.to_owned(), kind, capabilities));
+    }
+    Ok(map)
+}
+
+fn resolver_requires(slot_spec: &Value) -> Vec<String> {
+    slot_spec.get("requires").and_then(Value::as_array).map(|items|
+        items.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default()
+}
+
+/// 槽位候选是否满足能力要求（全部 requires 在场）。
+fn resolver_capable(capabilities: &[String], requires: &[String]) -> bool {
+    requires.iter().all(|required| capabilities.iter().any(|held| held == required))
+}
+
+/// 纯 Resolver 核心：slots × 锚点 → 每槽候选（≤max，稳定序）、入口候选与语义诊断。
+/// status："validated" = 全部槽位 ≥min 且入口在场（提案可交给 mount.bind 确认）；
+/// "proposed" = 存在缺口，需要用户在画布上改选或补锚点。
+fn resolve_binding_slots(game: &Value, anchors: &[(String, String, Vec<String>)]) -> Value {
+    let slots = game.get("slots").and_then(Value::as_object);
+    let mut slot_rows = Vec::new();
+    let mut bindings = serde_json::Map::new();
+    let mut diagnostics = Vec::new();
+    let mut all_fillable = true;
+    for (slot, spec) in slots.into_iter().flatten() {
+        let kind = spec.get("kind").and_then(Value::as_str).unwrap_or_default();
+        let min = spec.get("min").and_then(Value::as_u64).unwrap_or(0);
+        let max = spec.get("max").and_then(Value::as_u64).unwrap_or(64);
+        let requires = resolver_requires(spec);
+        let candidates: Vec<&(String, String, Vec<String>)> = anchors.iter()
+            .filter(|(_, anchor_kind, capabilities)| anchor_kind == kind && resolver_capable(capabilities, &requires))
+            .collect();
+        let ranked: Vec<String> = candidates.iter().take(max as usize).map(|(id, _, _)| id.clone()).collect();
+        let count = candidates.len() as u64;
+        let status = if count >= min { "fillable" } else if count == 0 { "unfillable" } else { "underfilled" };
+        if count < min { all_fillable = false; }
+        if count == 0 {
+            diagnostics.push(json!({"code":"slot_unfillable","severity":"error","slot":slot,
+                "message":format!("Slot \"{slot}\" cannot be filled in this City revision: no {} anchor with {} capability remains (0 candidates). Pick other anchors on the City canvas or add one first.", kind,
+                    if requires.is_empty() { "any".to_owned() } else { requires.join("/") })}));
+        } else if count < min {
+            diagnostics.push(json!({"code":"slot_underfilled","severity":"error","slot":slot,
+                "message":format!("Slot \"{slot}\" has only {count} usable anchor(s) in this City revision, fewer than the required {min}.")}));
+        }
+        bindings.insert(slot.clone(), json!(ranked));
+        slot_rows.push(json!({"slot":slot,"kind":kind,"min":min,"max":max,
+            "candidateCount":count,"status":status}));
+    }
+    let entry_candidates: Vec<String> = anchors.iter()
+        .filter(|(_, kind, _)| kind == "spawn").map(|(id, _, _)| id.clone()).collect();
+    if entry_candidates.is_empty() {
+        all_fillable = false;
+        diagnostics.push(json!({"code":"entry_unfillable","severity":"error",
+            "message":"No spawn anchor remains in this City revision; the mount has no entry point on the City canvas."}));
+    }
+    let entry_anchor = entry_candidates.first().cloned().unwrap_or_default();
+    json!({"status":if all_fillable { "validated" } else { "proposed" },
+        "entryAnchorId":entry_anchor,"entryCandidates":entry_candidates,
+        "bindings":Value::Object(bindings),"slots":slot_rows,"diagnostics":diagnostics})
+}
+
+/// proposalId 配方（§7 文档化）：game 身份 + City 锚定 + 提案绑定内容的规范摘要。
+fn binding_proposal_id(game: &Value, city_id: Option<&str>, city_revision: Option<u64>, resolved: &Value) -> Result<String, &'static str> {
+    let request = json!({"gameId":game.get("id").cloned().unwrap_or(Value::Null),
+        "gameDigest":digest(&canonical_json(game).map_err(|_| "creator_game_invalid")?),
+        "cityId":city_id.map(str::to_owned),"cityRevision":city_revision,
+        "entryAnchorId":resolved.get("entryAnchorId").cloned().unwrap_or(Value::Null),
+        "bindings":resolved.get("bindings").cloned().unwrap_or(Value::Null)});
+    Ok(digest(&canonical_json(&request).map_err(|_| "creator_game_invalid")?))
+}
+
+/// 读取某 City revision 的最新布局快照并投影成 Resolver 锚点（返回布局对象本体）。
+fn scoped_city_resolver_layout(db: &rusqlite::Connection, city_id: &str, city_revision: u64) -> Result<Value, &'static str> {
+    let raw: String = db.query_row("SELECT snapshot_json FROM creator_city_layouts_v2 WHERE city_id=?1 AND city_revision=?2 ORDER BY created_at_ms DESC LIMIT 1",
+        params![city_id,city_revision], |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_layout_not_found")?;
+    let snapshot: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let resolved = crate::creator_city_patch::resolve_scoped_layout(&snapshot)?;
+    Ok(resolved.layout.clone())
+}
+
+/// PR13 §7 绑定提案（只读）：{projectId, cityId?, cityRevision?} → GameBindingProposal。
+/// cityId/cityRevision 缺省取项目钉住值；显式传入即「用户选择的 City Revision」
+/// （迁移重提案/跨 City 预览）。legacy 布局项目没有 City 身份，按钉住快照提案并
+/// 如实标注 cityScope:"legacy"。无写入路径。
+fn run_game_binding_propose(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let project_id = args_valid_id(payload, "projectId")?;
+    let db = database(home)?;
+    let raw: String = db.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [project_id],
+        |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let game = document.get("game").filter(|value| value.is_object()).ok_or("creator_game_invalid")?;
+    let requested_city = payload.get("cityId").and_then(Value::as_str).filter(|id| !id.is_empty());
+    let requested_revision = payload.get("cityRevision").and_then(Value::as_u64);
+    let pinned_city = document.get("cityId").and_then(Value::as_str);
+    let city_id = requested_city.or(pinned_city);
+    let (city_scope, layout, city_revision, resolved_from) = match city_id {
+        Some(city_id) => {
+            if !valid_id(city_id) { return Err("creator_request_invalid"); }
+            let current: u64 = db.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+                .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
+            let revision = requested_revision.unwrap_or_else(|| match (requested_city.is_none(), pinned_city.is_some()) {
+                (true, true) => document.get("cityRevision").and_then(Value::as_u64).unwrap_or(current),
+                _ => current,
+            });
+            if revision > current { return Err("revision_conflict"); }
+            let layout = scoped_city_resolver_layout(&db, city_id, revision)?;
+            ("city".to_owned(), layout, Some(revision), if requested_city.is_some() || requested_revision.is_some() { "requested" } else { "pinned" }.to_owned())
+        }
+        None => {
+            // legacy：项目自带钉住快照（mount_anchor_map 同源），没有 City revision 身份。
+            let layout = document.get("cityLayout").filter(|value| !value.is_null()).ok_or("creator_layout_not_bound")?
+                .get("layout").cloned().ok_or("creator_layout_not_bound")?;
+            ("legacy".to_owned(), layout, None, "pinned".to_owned())
+        }
+    };
+    let anchors = resolver_anchor_map(&layout)?;
+    let resolved = resolve_binding_slots(game, &anchors);
+    let mut diagnostics = resolved.get("diagnostics").cloned().unwrap_or_else(|| json!([]));
+    if city_scope == "legacy" {
+        if let Some(items) = diagnostics.as_array_mut() { items.push(json!({"code":"binding_legacy_layout","severity":"info",
+            "message":"This project is bound to a legacy layout snapshot without a City identity; bindings resolve against the pinned snapshot and have no City revision to migrate."})); }
+    }
+    let proposal_id = binding_proposal_id(game, city_id, city_revision, &resolved)?;
+    Ok(json!({"projectId":project_id,"proposalId":proposal_id,"cityScope":city_scope,
+        "gameId":game.get("id").cloned().unwrap_or(Value::Null),
+        "gameDigest":digest(&canonical_json(game).map_err(|_| "creator_game_invalid")?),
+        "cityId":city_id.map(str::to_owned),"cityRevision":city_revision,
+        "resolvedFrom":resolved_from,"status":resolved["status"].clone(),
+        "entryAnchorId":resolved["entryAnchorId"].clone(),"entryCandidates":resolved["entryCandidates"].clone(),
+        "bindings":resolved["bindings"].clone(),"slots":resolved["slots"].clone(),"diagnostics":diagnostics}))
+}
+
+/// 单个 mount 对新布局的逐槽复检（§7.2 迁移矩阵的复验核心）：
+/// 绑定目标仍在场、类型未变、能力仍覆盖、数量仍在 [min,max]，入口仍是 spawn。
+fn binding_mount_review(mount: &Value, slots: &Value, anchors: &[(String, String, Vec<String>)]) -> Value {
+    let find = |id: &str| anchors.iter().find(|(anchor_id, _, _)| anchor_id == id);
+    let bindings = mount.get("bindings").and_then(Value::as_object).cloned().unwrap_or_default();
+    let mut slot_rows = Vec::new();
+    let mut mount_ok = true;
+    for (slot, bound_ids) in &bindings {
+        let spec = slots.get(slot).cloned().unwrap_or(Value::Null);
+        let min = spec.get("min").and_then(Value::as_u64).unwrap_or(0);
+        let max = spec.get("max").and_then(Value::as_u64).unwrap_or(64);
+        let requires = resolver_requires(&spec);
+        let kind = spec.get("kind").and_then(Value::as_str).unwrap_or_default();
+        let bound: Vec<String> = bound_ids.as_array().map(|items|
+            items.iter().filter_map(Value::as_str).map(str::to_owned).collect()).unwrap_or_default();
+        let mut missing = Vec::new();
+        let mut capability_lost = Vec::new();
+        let mut kind_changed = Vec::new();
+        let mut diagnostics = Vec::new();
+        for id in &bound {
+            match find(id) {
+                None => {
+                    missing.push(id.clone());
+                    diagnostics.push(json!({"code":"binding_target_missing","severity":"error","slot":slot,"targetId":id,
+                        "message":format!("Slot \"{slot}\" bound anchor \"{id}\" no longer exists in this City revision; re-pick a route point on the City canvas.")}));
+                }
+                Some((_, anchor_kind, capabilities)) => {
+                    if !kind.is_empty() && anchor_kind != kind {
+                        kind_changed.push(id.clone());
+                        diagnostics.push(json!({"code":"binding_target_kind_changed","severity":"error","slot":slot,"targetId":id,
+                            "message":format!("Slot \"{slot}\" bound anchor \"{id}\" is no longer a {kind} anchor in this City revision.")}));
+                    }
+                    if !resolver_capable(capabilities, &requires) {
+                        capability_lost.push(id.clone());
+                        diagnostics.push(json!({"code":"binding_capability_unmet","severity":"error","slot":slot,"targetId":id,
+                            "message":format!("Slot \"{slot}\" bound anchor \"{id}\" no longer supports {} in this City revision.",
+                                if requires.is_empty() { "its required capabilities".to_owned() } else { requires.join("/") })}));
+                    }
+                }
+            }
+        }
+        if bound.len() < min as usize || bound.len() > max as usize {
+            diagnostics.push(json!({"code":"binding_slot_count_changed","severity":"error","slot":slot,
+                "message":format!("Slot \"{slot}\" needs {min} to {max} bound anchors but {bound_count} remain usable in this City revision.", bound_count = bound.len() - missing.len())}));
+        }
+        let ok = missing.is_empty() && capability_lost.is_empty() && kind_changed.is_empty()
+            && bound.len() >= min as usize && bound.len() <= max as usize;
+        if !ok { mount_ok = false; }
+        slot_rows.push(json!({"slot":slot,"status":if ok { "ok" } else { "needs_repair" },
+            "bound":bound,"missing":missing,"capabilityLost":capability_lost,"kindChanged":kind_changed,
+            "diagnostics":diagnostics}));
+    }
+    let entry = mount.get("entryAnchorId").and_then(Value::as_str).unwrap_or_default();
+    let entry_ok = find(entry).is_some_and(|(_, kind, _)| kind == "spawn");
+    if !entry_ok {
+        mount_ok = false;
+        slot_rows.push(json!({"slot":"<entry>","status":"needs_repair","bound":json!([entry]),
+            "missing":json!([entry]),"capabilityLost":json!([]),"kindChanged":json!([]),
+            "diagnostics":[json!({"code":"binding_entry_missing","severity":"error","targetId":entry,
+                "message":format!("Entry anchor \"{entry}\" no longer exists as a spawn anchor in this City revision; pick a new entry on the City canvas.")})]}));
+    }
+    json!({"mountId":mount.get("mountId").cloned().unwrap_or(Value::Null),
+        "entryAnchorId":mount.get("entryAnchorId").cloned().unwrap_or(Value::Null),
+        "gameDigest":mount.pointer("/game/digest").cloned().unwrap_or(Value::Null),
+        "status":if mount_ok { "ok" } else { "needs_repair" },"slots":slot_rows})
+}
+
+/// PR13 §7 迁移检查（只读）：{projectId, expectedCityRevision?} → §7.2 矩阵分类。
+/// 对比项目钉住的 City revision 与 City 当前 revision，并复检每个 Mount 的绑定；
+/// 游戏身份按 mount.game.digest 对比当前 game（slots 契约相同 = 兼容可复用）。
+/// 只作建议、不写入：needs_repair 的强制面是 release 冻结 pin + bind 版本闸。
+fn run_game_binding_check(home: &Path, _owner: &str, _instance: &str, payload: &Value) -> Result<Value, &'static str> {
+    let project_id = args_valid_id(payload, "projectId")?;
+    let expected_revision = payload.get("expectedCityRevision").and_then(Value::as_u64);
+    let db = database(home)?;
+    let raw: String = db.query_row("SELECT document_json FROM creator_projects WHERE project_id=?1", [project_id],
+        |row| row.get(0)).optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_project_not_found")?;
+    let document: Value = serde_json::from_str(&raw).map_err(|_| "creator_store_unavailable")?;
+    let game = document.get("game").filter(|value| value.is_object()).ok_or("creator_game_invalid")?;
+    let current_digest = digest(&canonical_json(game).map_err(|_| "creator_game_invalid")?);
+    let mounts = document.get("mounts").and_then(Value::as_array).cloned().unwrap_or_default();
+    let pinned_city = document.get("cityId").and_then(Value::as_str);
+    let Some(city_id) = pinned_city else {
+        // legacy 布局项目没有 City revision 身份：没有迁移语义，如实报告 current。
+        return Ok(json!({"projectId":project_id,"cityScope":"legacy","status":"current","mountReuse":true,
+            "gameIdentity":{"currentDigest":current_digest,"changed":false,"rebindRequired":false},
+            "mounts":json!([]),"diagnostics":[json!({"code":"binding_legacy_layout","severity":"info",
+                "message":"This project is bound to a legacy layout snapshot without a City identity; no City revision migration applies."})],
+            "migration":{"kind":"reuse","note":"legacy layout projects have no City revision identity"}}));
+    };
+    let pinned_revision = document.get("cityRevision").and_then(Value::as_u64).ok_or("creator_layout_scope_mismatch")?;
+    let current: u64 = db.query_row("SELECT revision FROM creator_cities WHERE city_id=?1", [city_id], |row| row.get(0))
+        .optional().map_err(|_| "creator_store_unavailable")?.ok_or("creator_city_not_found")?;
+    if let Some(expected) = expected_revision {
+        if expected != current { return Err("revision_conflict"); }
+    }
+    // 复检基准：revision 未变时用项目钉住的布局（两者相等）；变了则按 City 当前
+    // revision 的布局复检（needs_repair 的证据来自新快照，不是旧参数坐标）。
+    let layout = scoped_city_resolver_layout(&db, city_id, current)?;
+    let anchors = resolver_anchor_map(&layout)?;
+    let slots: Value = game.get("slots").cloned().unwrap_or_else(|| json!({}));
+    let current_keys: Vec<&String> = slots.as_object().map(|slots| slots.keys().collect()).unwrap_or_default();
+    let mut mount_rows = Vec::new();
+    let mut diagnostics = Vec::new();
+    let mut needs_repair = false;
+    let mut rebind_required = false;
+    for mount in &mounts {
+        let review = binding_mount_review(mount, &slots, &anchors);
+        // 游戏身份（§7.2 末行）：mount 只存绑定时的 game.digest。digest 变了先比
+        // 槽位键集——绑定键集 == 当前 slots 键集 = 旧绑定仍满足新定义（兼容可复用，
+        // 规则变了但绑定不变）；键集漂移 = 必须重新绑定。逐槽能力/数量复检已在
+        // binding_mount_review 内对照**当前** specs 完成。
+        let stored_digest = review.get("gameDigest").and_then(Value::as_str).unwrap_or_default();
+        if !stored_digest.is_empty() && stored_digest != current_digest {
+            let bound_keys: Vec<&String> = mount.get("bindings").and_then(Value::as_object)
+                .map(|bindings| bindings.keys().collect()).unwrap_or_default();
+            let added: Vec<&&String> = current_keys.iter().filter(|slot| !bound_keys.contains(*slot)).collect();
+            let removed: Vec<&&String> = bound_keys.iter().filter(|slot| !current_keys.contains(*slot)).collect();
+            if added.is_empty() && removed.is_empty() {
+                diagnostics.push(json!({"code":"binding_game_digest_changed","severity":"info",
+                    "message":"The game definition changed since this mount was bound, but its slot contracts still match the existing bindings; the mount stays reusable."}));
+            } else {
+                rebind_required = true;
+                for slot in added {
+                    diagnostics.push(json!({"code":"binding_slot_added","severity":"error","slot":slot,
+                        "message":format!("Slot \"{slot}\" exists in the current game definition but is missing from this mount's bindings; bind it on the City canvas.")}));
+                }
+                for slot in removed {
+                    diagnostics.push(json!({"code":"binding_slot_removed","severity":"error","slot":slot,
+                        "message":format!("Slot \"{slot}\" is bound by this mount but no longer exists in the current game definition; rebind the mount.")}));
+                }
+            }
+        }
+        if review["status"] == "needs_repair" { needs_repair = true; }
+        for slot in review.get("slots").and_then(Value::as_array).into_iter().flatten() {
+            for diagnostic in slot.get("diagnostics").and_then(Value::as_array).into_iter().flatten() {
+                diagnostics.push(diagnostic.clone());
+            }
+        }
+        mount_rows.push(review);
+    }
+    let status = if current == pinned_revision { "current" } else { "city_updated" };
+    let mount_reuse = !needs_repair && !rebind_required;
+    let migration_kind = if rebind_required { "rebind_required" }
+        else if needs_repair { "needs_repair" }
+        else if status == "city_updated" { "reconfirm" }
+        else { "reuse" };
+    // 复确认提案：city 更新且全部兼容时给出新版 revision 的绑定提案 id（§7.2 第 2 行）。
+    let resolved = resolve_binding_slots(game, &anchors);
+    let proposal_id = binding_proposal_id(game, Some(city_id), Some(current), &resolved)?;
+    Ok(json!({"projectId":project_id,"cityScope":"city","cityId":city_id,
+        "projectCityRevision":pinned_revision,"currentCityRevision":current,
+        "expectedCityRevision":expected_revision.map(|revision| json!(revision)).unwrap_or(Value::Null),
+        "status":status,"mountReuse":mount_reuse,
+        "gameIdentity":{"currentDigest":current_digest,"changed":mounts.iter().any(|mount|
+            mount.pointer("/game/digest").and_then(Value::as_str).is_some_and(|digest| digest != current_digest)),
+            "rebindRequired":rebind_required},
+        "mounts":mount_rows,"diagnostics":diagnostics,
+        "migration":{"kind":migration_kind,"proposalId":proposal_id,
+            "proposalStatus":resolved["status"].clone(),
+            "note":match migration_kind {
+                "reuse" => "City revision unchanged; reuse the validated mount".to_owned(),
+                "reconfirm" => "City updated and every target still exists and stays compatible; confirm the binding for the new revision via a project bound to it (projects pin their City revision at creation; bind is guarded against stale revisions)".to_owned(),
+                "needs_repair" => "A bound target was deleted or lost a required capability in the updated City; block new runs with the old binding and repair on the City canvas".to_owned(),
+                _ => "The game definition changed its slot contracts; re-bind the mount".to_owned(),
+            }}}))
 }
 
 #[cfg(test)]
@@ -5375,5 +5716,302 @@ mod city_sdk_v3_inspect_tests {
             "story_outbox":count("story_outbox"),"story_operations":count("story_operations"),
             "city_game_runs":count("city_game_runs"),"resident_activity_leases":count("resident_activity_leases"),
             "city_clocks":count("city_clocks")})
+    }
+}
+
+// ── PR13 §7 City Binding Resolver / Migration（绑定提案与迁移）──
+// 只读 Resolver 与迁移矩阵的机械证据：提案产出语义诊断与稳定 proposalId；
+// 迁移检查按 §7.2 分类；bind 版本闸拒绝在旧钉住快照上继续写入。
+#[cfg(test)]
+mod binding_resolver_tests {
+    use super::*;
+    use crate::creator_city_patch::{mutate_city_anchors, store_scoped_city_layout};
+
+    fn resolver_home() -> std::path::PathBuf {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let dir = std::env::temp_dir().join(format!("creator-binding-resolver-{}-{}", now_ms(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// 独立 City 草稿（revision 0）+ v3 作用域布局（含几何）：drive spawn（兼 fly）、3 个 drive zone。
+    /// v3 是必须的：空域锚点增删（mutate_city_anchors）要求自带几何的快照。
+    fn city_with_layout(home: &Path, name: &str, operation: &str) -> Value {
+        let created = crate::creator_cities::create_city(home, LOCAL_CREATOR_OWNER, operation, name, 42, &json!({"schemaVersion":1})).unwrap();
+        let city_id = created["cityId"].as_str().unwrap().to_owned();
+        let layout = json!({"schemaVersion":1,"id":"layout-bind-test","coordinateSystem":"city-local-m-v1",
+            "anchors":[
+                {"id":"bind-spawn:a","kind":"spawn","capabilities":["drive","fly"],"geometryRef":"g:spawn"},
+                {"id":"bind-cp:1","kind":"zone","capabilities":["drive"],"geometryRef":"g:1"},
+                {"id":"bind-cp:2","kind":"zone","capabilities":["drive"],"geometryRef":"g:2"},
+                {"id":"bind-cp:3","kind":"zone","capabilities":["drive"],"geometryRef":"g:3"}],
+            "links":[
+                {"id":"l1","fromAnchorId":"bind-spawn:a","toAnchorId":"bind-cp:1","capabilities":["drive"]},
+                {"id":"l2","fromAnchorId":"bind-cp:1","toAnchorId":"bind-cp:2","capabilities":["drive"]},
+                {"id":"l3","fromAnchorId":"bind-cp:2","toAnchorId":"bind-cp:3","capabilities":["drive"]}]});
+        store_scoped_city_layout(home, &json!({"schemaVersion":3,"cityId":city_id,"cityRevision":0,
+            "worldRevision":"world-bind-test","seed":42,"layout":layout,
+            "geometry":[
+                {"geometryRef":"g:spawn","positionMeters":{"x":0.0,"y":0.0,"z":0.0}},
+                {"geometryRef":"g:1","positionMeters":{"x":30.0,"y":0.0,"z":0.0}},
+                {"geometryRef":"g:2","positionMeters":{"x":60.0,"y":0.0,"z":0.0}},
+                {"geometryRef":"g:3","positionMeters":{"x":90.0,"y":0.0,"z":0.0}}]})).unwrap();
+        created
+    }
+
+    fn checkpoint_project(home: &Path, city: &Value, operation: &str) -> Value {
+        create_project_from_city_draft(home, LOCAL_CREATOR_OWNER, "checkpoint-race", operation,
+            "world-bind-test", city["cityId"].as_str().unwrap()).unwrap()
+    }
+
+    fn bind_mount(home: &Path, project_id: &str, operation: &str) -> Result<Value, &'static str> {
+        bind_typed_mount(home, LOCAL_CREATOR_OWNER, project_id, 0, &json!({
+            "mountId":"mount-resolver","entryAnchorId":"bind-spawn:a",
+            "bindings":{"points":["bind-cp:1","bind-cp:2","bind-cp:3"]}}), operation)
+    }
+
+    #[test]
+    fn binding_propose_resolves_fillable_slots_with_stable_proposal_id() {
+        let home = resolver_home();
+        let city = city_with_layout(&home, "Resolver City", "op-resolver-city");
+        let project = checkpoint_project(&home, &city, "op-resolver-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        let propose = |payload: Value| run_game_binding_propose(&home, LOCAL_CREATOR_OWNER, "studio", &payload).unwrap();
+        let proposal = propose(json!({"projectId":project_id}));
+        // 缺省：解析到项目钉住的 City revision（cityScope=city、resolvedFrom=pinned）。
+        assert_eq!(proposal["status"], "validated", "{proposal}");
+        assert_eq!(proposal["cityScope"], "city");
+        assert_eq!(proposal["resolvedFrom"], "pinned");
+        assert_eq!(proposal["cityId"], city["cityId"]);
+        assert_eq!(proposal["cityRevision"], 0);
+        assert_eq!(proposal["entryAnchorId"], "bind-spawn:a");
+        assert_eq!(proposal["bindings"]["points"].as_array().unwrap().len(), 3, "{proposal}");
+        // proposalId 是稳定摘要：同一输入重算两次逐字节一致。
+        let again = propose(json!({"projectId":project_id}));
+        assert_eq!(proposal["proposalId"], again["proposalId"]);
+        assert!(proposal["proposalId"].as_str().unwrap().starts_with("sha256:"));
+        // 显式 cityRevision 走 requested 路径，同样的 (game, city, revision, bindings) → 同一 proposalId。
+        let explicit = propose(json!({"projectId":project_id,"cityRevision":0}));
+        assert_eq!(explicit["resolvedFrom"], "requested");
+        assert_eq!(explicit["proposalId"], proposal["proposalId"]);
+        // 槽位行是语义投影（kind/min/max/candidateCount/status），诊断在可填满时为空。
+        assert_eq!(proposal["slots"][0]["slot"], "points");
+        assert_eq!(proposal["slots"][0]["candidateCount"], 3);
+        assert_eq!(proposal["slots"][0]["status"], "fillable");
+        assert!(proposal["diagnostics"].as_array().unwrap().is_empty(), "{proposal}");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn binding_propose_reports_unfillable_slots_with_semantic_diagnostics() {
+        let home = resolver_home();
+        let city = city_with_layout(&home, "Scarce City", "op-scarce-city");
+        let project = checkpoint_project(&home, &city, "op-scarce-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        // 删掉全部 drive zone（新 City revision，锚点从 4 → 1）：槽位 unfillable。
+        mutate_city_anchors(&home, LOCAL_CREATOR_OWNER, city["cityId"].as_str().unwrap(), 0, &json!([]),
+            &["bind-cp:1".to_owned(), "bind-cp:2".to_owned(), "bind-cp:3".to_owned()], "op-scarce-remove").unwrap();
+        let proposal = run_game_binding_propose(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        // 未显式指定 revision 时提案跟随项目钉住的旧 revision——仍是 validated；
+        // 显式指定当前 revision 才暴露缺口（迁移重提案就是显式路径）。
+        assert_eq!(proposal["cityRevision"], 0, "{proposal}");
+        assert_eq!(proposal["status"], "validated", "{proposal}");
+        let pinned = run_game_binding_propose(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id,"cityRevision":1})).unwrap();
+        assert_eq!(pinned["cityRevision"], 1, "{pinned}");
+        assert_eq!(pinned["status"], "proposed", "{pinned}");
+        assert_eq!(pinned["slots"][0]["status"], "unfillable");
+        assert_eq!(pinned["slots"][0]["candidateCount"], 0);
+        let diagnostics = pinned["diagnostics"].as_array().unwrap();
+        let unfillable = diagnostics.iter().find(|item| item["code"] == "slot_unfillable").expect("slot_unfillable");
+        assert_eq!(unfillable["severity"], "error");
+        assert_eq!(unfillable["slot"], "points");
+        // 画布可读：消息含槽位名与能力语义，绝不含裸能力键 JSON 或坐标。
+        let message = unfillable["message"].as_str().unwrap();
+        assert!(message.contains("points"), "{message}");
+        assert!(message.contains("drive"), "{message}");
+        assert!(!message.contains("geometryRef") && !message.contains("positionMeters"), "{message}");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn migration_check_reuses_mount_while_city_revision_unchanged() {
+        let home = resolver_home();
+        let city = city_with_layout(&home, "Steady City", "op-steady-city");
+        let project = checkpoint_project(&home, &city, "op-steady-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        bind_mount(&home, &project_id, "op-steady-bind").unwrap();
+        let check = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(check["status"], "current", "{check}");
+        assert_eq!(check["mountReuse"], true);
+        assert_eq!(check["migration"]["kind"], "reuse");
+        assert_eq!(check["mounts"][0]["status"], "ok", "{check}");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn migration_check_reconfirms_when_city_updates_but_targets_survive() {
+        let home = resolver_home();
+        let city = city_with_layout(&home, "Growing City", "op-growing-city");
+        let project = checkpoint_project(&home, &city, "op-growing-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        bind_mount(&home, &project_id, "op-growing-bind").unwrap();
+        // City 更新（+1 个 fly 空域门 → revision 1）：原目标全部仍在、能力不变。
+        mutate_city_anchors(&home, LOCAL_CREATOR_OWNER, city["cityId"].as_str().unwrap(), 0,
+            &json!([{"id":"air-gate:1","kind":"zone","capabilities":["fly"],"position":{"x":10.0,"y":40.0,"z":10.0},"radiusMeters":20.0}]),
+            &[], "op-growing-air").unwrap();
+        let check = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(check["projectCityRevision"], 0, "{check}");
+        assert_eq!(check["currentCityRevision"], 1, "{check}");
+        assert_eq!(check["status"], "city_updated");
+        assert_eq!(check["mountReuse"], true, "{check}");
+        assert_eq!(check["mounts"][0]["status"], "ok");
+        assert_eq!(check["migration"]["kind"], "reconfirm");
+        assert!(check["migration"]["proposalId"].as_str().is_some(), "{check}");
+        // expectedCityRevision 是 CAS：声明值与 City 当前 revision 不符 → revision_conflict。
+        assert_eq!(run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio",
+            &json!({"projectId":project_id,"expectedCityRevision":0})).unwrap_err(), "revision_conflict");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn migration_check_marks_needs_repair_when_target_deleted() {
+        let home = resolver_home();
+        let city = city_with_layout(&home, "Shrinking City", "op-shrink-city");
+        let project = checkpoint_project(&home, &city, "op-shrink-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        bind_mount(&home, &project_id, "op-shrink-bind").unwrap();
+        // City 更新并删掉一个已绑定目标（bind-cp:3）。
+        mutate_city_anchors(&home, LOCAL_CREATOR_OWNER, city["cityId"].as_str().unwrap(), 0, &json!([]),
+            &["bind-cp:3".to_owned()], "op-shrink-remove").unwrap();
+        let check = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(check["status"], "city_updated");
+        assert_eq!(check["mountReuse"], false, "{check}");
+        assert_eq!(check["migration"]["kind"], "needs_repair");
+        let mount = &check["mounts"][0];
+        assert_eq!(mount["status"], "needs_repair", "{check}");
+        let slot = mount["slots"].as_array().unwrap().iter().find(|slot| slot["slot"] == "points").unwrap();
+        assert_eq!(slot["status"], "needs_repair");
+        assert_eq!(slot["missing"].as_array().unwrap(), &[json!("bind-cp:3")]);
+        let diagnostic = slot["diagnostics"].as_array().unwrap().iter().find(|item| item["code"] == "binding_target_missing").unwrap();
+        assert_eq!(diagnostic["slot"], "points");
+        assert_eq!(diagnostic["targetId"], "bind-cp:3");
+        assert!(diagnostic["message"].as_str().unwrap().contains("bind-cp:3"));
+        // 复检基准是新 revision 的布局：剩余候选仍列出（修复素材），不是裸坐标。
+        let proposal = run_game_binding_propose(&home, LOCAL_CREATOR_OWNER, "studio",
+            &json!({"projectId":project_id,"cityRevision":1})).unwrap();
+        assert_eq!(proposal["bindings"]["points"].as_array().unwrap().len(), 2, "{proposal}");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn migration_check_leaves_original_city_untouched_when_proposing_elsewhere() {
+        let home = resolver_home();
+        let first = city_with_layout(&home, "First City", "op-first-city");
+        let second = city_with_layout(&home, "Second City", "op-second-city");
+        let project = checkpoint_project(&home, &first, "op-switch-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        bind_mount(&home, &project_id, "op-switch-bind").unwrap();
+        let before = read_project(&home, &project_id).unwrap();
+        // 用户换城：提案显式指向第二座 City（requested 路径）——只读，绝不改原安装。
+        let proposal = run_game_binding_propose(&home, LOCAL_CREATOR_OWNER, "studio",
+            &json!({"projectId":project_id,"cityId":second["cityId"]})).unwrap();
+        assert_eq!(proposal["cityId"], second["cityId"], "{proposal}");
+        assert_eq!(proposal["resolvedFrom"], "requested");
+        assert_eq!(proposal["cityRevision"], 0);
+        let after = read_project(&home, &project_id).unwrap();
+        assert_eq!(after, before, "a cross-city proposal must not mutate the project");
+        // 原城安装关系不变：迁移检查仍以 First City 为准、reuse。
+        let check = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(check["cityId"], first["cityId"], "{check}");
+        assert_eq!(check["migration"]["kind"], "reuse");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn migration_check_handles_game_definition_updates() {
+        let home = resolver_home();
+        let city = city_with_layout(&home, "Evolving City", "op-evolve-city");
+        let project = checkpoint_project(&home, &city, "op-evolve-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        bind_mount(&home, &project_id, "op-evolve-bind").unwrap();
+        let slots = |document: &mut Value| document["game"]["slots"].clone();
+        // 情形 A：规则变了（同槽位键集）→ digest 变但绑定键集仍匹配 → 可复用 + info。
+        let mut document = read_project(&home, &project_id).unwrap();
+        let original_slots = slots(&mut document);
+        document["game"]["integerParameters"]["timeLimitTicks"] = json!({"default":2400,"min":60,"max":36000});
+        {
+            let db = database(&home).unwrap();
+            db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        }
+        let reuse = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(reuse["gameIdentity"]["changed"], true, "{reuse}");
+        assert_eq!(reuse["gameIdentity"]["rebindRequired"], false, "{reuse}");
+        assert_eq!(reuse["mountReuse"], true, "{reuse}");
+        assert!(reuse["diagnostics"].as_array().unwrap().iter().any(|item| item["code"] == "binding_game_digest_changed"), "{reuse}");
+        // 情形 B：槽位键集漂移（新增 slot）→ rebind_required。
+        let mut document = read_project(&home, &project_id).unwrap();
+        let mut mutated = original_slots.clone();
+        mutated["bonus"] = json!({"kind":"zone","min":1,"max":4,"requires":["drive"]});
+        document["game"]["slots"] = mutated;
+        {
+            let db = database(&home).unwrap();
+            db.execute("UPDATE creator_projects SET document_json=?2 WHERE project_id=?1", params![project_id, document.to_string()]).unwrap();
+        }
+        let rebind = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(rebind["gameIdentity"]["rebindRequired"], true, "{rebind}");
+        assert_eq!(rebind["migration"]["kind"], "rebind_required", "{rebind}");
+        let diagnostic = rebind["diagnostics"].as_array().unwrap().iter().find(|item| item["code"] == "binding_slot_added").unwrap();
+        assert_eq!(diagnostic["slot"], "bonus", "{rebind}");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn bind_is_guarded_against_a_moved_city_revision() {
+        let home = resolver_home();
+        let city = city_with_layout(&home, "Moved City", "op-moved-city");
+        let project = checkpoint_project(&home, &city, "op-moved-project");
+        let project_id = project["projectId"].as_str().unwrap().to_owned();
+        // revision 未动：绑定成功（现有校验语义不变）。
+        bind_mount(&home, &project_id, "op-moved-bind-first").unwrap();
+        // City 更新到 revision 1 后，项目仍钉在 revision 0——继续绑会被版本闸拒绝
+        // （revision CAS 先行通过：项目 revision 是 1，绑定走当前文档；闸读的是
+        // **City** revision）。旧绑定不得冒充新绑定；改绑新版走绑定提案 + 绑定
+        // 新版 City 的新项目。
+        mutate_city_anchors(&home, LOCAL_CREATOR_OWNER, city["cityId"].as_str().unwrap(), 0,
+            &json!([{"id":"air-gate:2","kind":"zone","capabilities":["fly"],"position":{"x":20.0,"y":40.0,"z":20.0},"radiusMeters":20.0}]),
+            &[], "op-moved-air").unwrap();
+        let moved_inputs = json!({
+            "mountId":"mount-resolver-2","entryAnchorId":"bind-spawn:a",
+            "bindings":{"points":["bind-cp:1","bind-cp:2","bind-cp:3"]}});
+        assert_eq!(bind_typed_mount(&home, LOCAL_CREATOR_OWNER, &project_id, 1, &moved_inputs, "op-moved-bind-second").unwrap_err(), "creator_binding_city_moved");
+        // 预览同样拒绝（同一闸在 bind 前）；迁移检查指出 reconfirm + 新版提案。
+        assert_eq!(preview_typed_mount(&home, &project_id, 1, &moved_inputs).unwrap_err(), "creator_binding_city_moved");
+        let check = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(check["migration"]["kind"], "reconfirm", "{check}");
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn binding_check_reports_legacy_projects_without_city_identity() {
+        let home = resolver_home();
+        // legacy 布局项目（create_project_from_city_layout，无 cityId/cityRevision）。
+        crate::creator_city_patch::publish_city_layout_snapshot(&home, &json!({"schemaVersion":1,"worldRevision":"world-rev-legacy","seed":7,"layout":{
+            "schemaVersion":1,"id":"layout-legacy-resolver","coordinateSystem":"city-local-m-v1","anchors":[
+                {"id":"legacy-spawn:a","kind":"spawn","capabilities":["drive"],"geometryRef":"g:spawn"},
+                {"id":"legacy-cp:1","kind":"zone","capabilities":["drive"],"geometryRef":"g:1"},
+                {"id":"legacy-cp:2","kind":"zone","capabilities":["drive"],"geometryRef":"g:2"},
+                {"id":"legacy-cp:3","kind":"zone","capabilities":["drive"],"geometryRef":"g:3"}],"links":[]}})).unwrap();
+        let created = create_project_from_city_layout(&home, LOCAL_CREATOR_OWNER, "checkpoint-race", "op-legacy-resolver", "world-rev-legacy").unwrap();
+        let project_id = created["projectId"].as_str().unwrap().to_owned();
+        let proposal = run_game_binding_propose(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(proposal["cityScope"], "legacy", "{proposal}");
+        assert!(proposal["cityId"].is_null(), "{proposal}");
+        assert_eq!(proposal["status"], "validated", "{proposal}");
+        let check = run_game_binding_check(&home, LOCAL_CREATOR_OWNER, "studio", &json!({"projectId":project_id})).unwrap();
+        assert_eq!(check["cityScope"], "legacy", "{check}");
+        assert_eq!(check["status"], "current", "{check}");
+        assert_eq!(check["mountReuse"], true);
+        assert_eq!(check["migration"]["kind"], "reuse");
+        std::fs::remove_dir_all(home).ok();
     }
 }

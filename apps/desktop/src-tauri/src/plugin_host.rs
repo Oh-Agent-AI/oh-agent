@@ -905,6 +905,10 @@ fn headless_creator_methods() -> Vec<String> {
         "creator.story.graph.inspect",
         "creator.story.timeline.inspect",
         "creator.game.intent.simulate",
+        // PR13 §7 绑定提案/迁移检查：只读 Resolver，纯宿主本地（projects.sqlite +
+        // city layout 快照），无视口依赖——Studio 不在场时也要能产出可执行提案。
+        "creator.game.binding.propose",
+        "creator.game.binding.check",
         // pull 模式 submit 的服务端复核：纯宿主本地检查（内存 preview 表），
         // Studio 不在场时也必须可作答，否则任何 Agent 的提交都会 15s 超时。
         "creator.task.preview.verify",
@@ -1093,6 +1097,8 @@ fn answer_headless_call(home: &std::path::Path, method: &str, payload: &Value) -
         | "creator.story.resident.lease.acquire" | "creator.story.resident.lease.release"
         | "creator.game.rules.inspect" | "creator.story.graph.inspect"
         | "creator.story.timeline.inspect" | "creator.game.intent.simulate"
+        // PR13 §7：绑定提案/迁移检查走同一宿主管线（只读，无 headless 特例）。
+        | "creator.game.binding.propose" | "creator.game.binding.check"
         | "creator.task.preview.verify"
         // PR05：宿主本地冻结快照服务走 dispatch_as 的 creator_row（与 Studio 在场
         // 时同一条宿主管线），无 headless 特例。PR06 记录读面同管线。
@@ -2637,6 +2643,19 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("headless-gate-test-{}-{}", std::process::id(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// PR13 §7：绑定提案/迁移检查在 headless 臂可作答（纯宿主本地、只读——
+    /// 未知项目如实 creator_project_not_found，绝不静默成功）。
+    #[test]
+    fn headless_arm_answers_binding_propose_and_check_read_only() {
+        let home = headless_home();
+        let methods = headless_creator_methods();
+        assert!(methods.iter().any(|method| method == "creator.game.binding.propose"), "{methods:?}");
+        assert!(methods.iter().any(|method| method == "creator.game.binding.check"));
+        assert_eq!(answer_headless_call(&home, "creator.game.binding.propose", &json!({"projectId":"project-none"})).unwrap_err(), "creator_project_not_found");
+        assert_eq!(answer_headless_call(&home, "creator.game.binding.check", &json!({"projectId":"project-none"})).unwrap_err(), "creator_project_not_found");
+        let _ = std::fs::remove_dir_all(&home);
     }
 
     fn headless_layout_snapshot(world_revision: &str) -> Value {
