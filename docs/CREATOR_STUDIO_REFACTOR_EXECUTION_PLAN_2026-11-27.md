@@ -41,8 +41,8 @@
 | 10 · Code Game Task Adapter | StudioArtifactRef 统一 | ✅ 完成（2026-11-28） | `ef498f2b` | 见 §4.12 |
 | 11 · 有预算的自动修复 | 冻结验收标准 | ✅ 完成（2026-11-28） | `4c58ee3a` | 见 §4.13 |
 | 12 · Template Registry | 统一模板元数据 | ✅ 完成（2026-11-28） | `a33719cc` | 见 §4.14 |
-| 13 · Binding Resolver/Migration | 绑定提案与迁移 | 未开始 | — | — |
-| 14 · Gallery/Remix/E2E | 纵向闭环 | 未开始 | — | — |
+| 13 · Binding Resolver/Migration | 绑定提案与迁移 | ✅ 完成（2026-11-28） | `553ce1ef` | 见 §4.15 |
+| 14 · Gallery/Remix/E2E | 纵向闭环 | 进行中 | — | — |
 
 **波次与并发分组：**
 
@@ -236,6 +236,17 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 - **附带修复（`0160fdbd`）**：PR08 的 `playtest_input/playtest_stop` 是会话文件契约的宿主侧参考实现（生产写路径在 MCP 直写面，serve 再独立校验），仅测试调用——Wave 2 检查范围未含桌面 clippy 遗留的 dead_code 告警，以 `cfg_attr(not(test), allow(dead_code))` + 路由注释诚实标注（保留其钉住预算/队列/回执语义的价值）。桌面 clippy 现已干净。
 - **检查**：MCP 230（+4）、桌面 lib 581（+1 锁步）、city-sdk 171（含锁步）、UI 140（+3）+ typecheck + vite build、生成器 `--check` 幂等、clippy（MCP+桌面）干净、`git diff --check` 干净。
 - **残留（如实）**：cover 图、逐模板 parameters/bindingSlots 推迟（PR13 绑定工作）；Remix 入口是 PR14；声明式条目的 description/genre/tags 暂为 null（SDK 常量尚无这些字段）；运行时不重算 source.digest（锁步靠 guard 测试）。
+
+### 4.15 PR13 实施记录（`553ce1ef`）
+
+- **执行说明**：子代理实施主体后两次撞配额（5 小时窗 + 每周/月上限，后者 2026-12-03 重置），主会话接手收尾（验证 + EOF 空行修复 + 提交）；子代理遗留改动完整保留（+874 行 9 文件，含其未报告的 UI 切片与 uninstall 钉子测试）。
+- **两个只读 Resolver 工具**（宿主权威源 = projects.sqlite + `creator_city_layouts_v2` 快照，headless 臂可作答）：`creator_game_binding_propose`——按选定 City revision 解析声明式游戏的槽位需求为排序候选 + 入口候选 + 画布可操作的语义诊断（槽名与原因，绝无裸坐标），proposalId = digest(游戏身份, cityId, cityRevision, entry, bindings)；`creator_game_binding_check`——§7.2 矩阵：revision 未变复用已验证 Mount；City 更新则逐槽复检（ok / needs_repair：锚点缺失/能力丢失/kind 变化）并分类 `migration.kind: reuse|reconfirm|needs_repair|rebind_required`（game digest 变化但 slots 契约完好 = 兼容可复用；槽集漂移 = 需重绑）。
+- **建议性 + 结构性强制**：Resolver 不写入、不自动迁移。强制面：① release 冻结本就 pin cityId+revision+layout（旧绑定无法冒充新绑定——已对照代码核实）；② 新增 `mount.bind` revision 闸 `creator_binding_city_moved`（拒绝在过期钉住快照上写入，错误信息给出可执行下一步：对当前 revision 重提案）。
+- **卸载保世界对象（§7.2 末行钉子）**：`uninstall_keeps_city_world_objects_intact` 测试证明卸载只删包行与包字节，City 行/revision/作用域布局锚点逐字未动。
+- **UI**：挂载编辑器（`mountEditorModel.ts` + GameEditorPanel）展示语义诊断与排序候选。
+- **Legacy 边界**：无 City revision 身份的 legacy 布局项目如实报告 current（无迁移语义可套）。
+- **检查**：MCP 232（+4：工具注册只读契约、bind 闸错误可执行性、headless 臂、spec 描述锁步）、桌面 592（+6 含卸载钉子）、UI 141（+1）、clippy（MCP+桌面）干净、`git diff --check` 干净。
+- **残留（如实）**：多候选地图标注推迟到画布（诊断含排序候选 id）；code-game 安装不走 City Mount（Code Game Manifest 是 capability-based——本 PR 边界如实声明，code-game 绑定属后续工作）；提案不持久化（proposalId 为纯 digest 引用）。
 
 ## 5. 待真机验证项（自动化覆盖不到，最终 MVP 验收由用户在桌面构建执行）
 
