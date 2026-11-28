@@ -281,6 +281,38 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 
 **真机验收执行清单（Tower Defense 十步，桌面构建上执行，每步记录：实际操作、宿主/MCP 返回、截图或日志路径、偏差）：** ① 识别 TD 为可试玩样例/可编辑模板（ProjectsPage Code Game 卡片）；② "以此创建"按钮 → 独立工作区（记录 workspaceId）；③ 绑定真实 City（PR13 propose→确认→mount.bind）；④ Studio Agent 请求修改炮塔/敌人/规则（code-game scope 任务）；⑤ 构建 + 候选/Preview（Preview ID 隔离）；⑥ 冻结 City Snapshot 确定性测试 + 自动试玩（截图绑定 Candidate）；⑦ 失败时预算内修复轮（≤3）；⑧ 用户查看 Changes/人工试玩/确认发布（PR07 门禁裁决）；⑨ 拒绝不污染基线、中断可恢复；⑩ 安装不覆盖 City 内容、Revision 更新触发绑定迁移检查。
 
+**真机 Desktop 验收台账（2026-11-28，Oh Agent.app 本地构建）**
+
+构建与启动：`build-macos-app.sh` 全链通过（bundled CLI v1.4.0 / authority v33 / arm64；未签名=诊断模式预期）。
+
+| 十步 | 真机结果 |
+|---|---|
+| ① 识别样例/模板 | ✅ ProjectsPage Code Game 卡片渲染（runtime 徽章/兼容能力/操作指引） |
+| ② 以此创建工作区 | ✅ UI→宿主行→MCP→回执+工作区树双确认（gws-00b356d66cf012d5，template=tower-defense） |
+| ③ 绑定 City | code-game 走 capability-based 协议（PR13 边界），preview source 传 cityId——真机未单测 |
+| ④⑥⑦ Agent 修改/构建/测试 | ✅ 数据面直驱全链（候选 fork→HUD v2+敌速 0.8→sealed build→3 断言 verdict passed→awaiting-review，`candidate-1d4890ef1761f972`/build `ad89102e…`）；Agent 执行器（ACP/Codex）真机走到诚实闸（push 无写权限=PR10 已知边界，生产走 pull） |
+| ⑤ 构建+预览 | ✅ UI 构建按钮真机触发 sealed build（`6538dfe4` hello-city 实证）；TD 构建进列表（`276c3270`/`ad89102e`）；预览窗口打开待用户确认 |
+| ⑦ 修复轮 | 数据面由 PR11 测试覆盖（轮次/预算/冻结）；真机 ACP 链路走到冻结文案 |
+| ⑧ 接受/发布 | ✅ 用户"接受"→CAS commit 回基线（幂等重放+基线前进+源码含 v2 逐字核验） |
+| ⑨ 拒绝不污染 | 数据面由 PR09 测试覆盖 |
+| ⑩ 安装迁移 | 随安装流程（PR13 迁移检查已交付） |
+| 诚实闸 | ✅ 真机两次正确拒绝：空提案（preview_required）、code-game 提案缺 verified buildId |
+| PR11 冻结 | ✅ UI 时间线原文"验收标准已冻结（第 1 版）；修复轮只改实现、不改标准" |
+
+**真机验收抓到并修复的缺陷（全部"自动化测试全绿但真机才暴露"的集成缺口）：**
+
+| # | 缺陷 | 提交 |
+|---|---|---|
+| ① | descriptor localCalls 漏注 4 方法 → UI permission_denied | `d88b9db0` |
+| ② | operationId 冒号 × MCP 词表闸 → creator_request_invalid | `257d84e2` |
+| ③ | 创建后无进入工作区入口 + 无构建按钮（creator.code.build 宿主行） | `96ab277e` |
+| ④ | code-game 会话作用域缺失 → scope_mismatch（hook 忽略旧 sessionId）| `9ed844fd` |
+| ⑤ | 创建后 route 未切工作区 → 用户找不到 code 面板 | `6f74a090` |
+
+**验收证据**：`artifacts/acceptance-2026-11-28/`（候选链/commit JSON）；驱动测试 `crates/agent-vitals-mcp/tests/acceptance_candidate_chain.rs`（环境变量门控，幂等）。
+
+**遗留（收官后修复）**：缺陷④视图错位的架构级修复（code 工作区视图容器 + 会话作用域列）；执行器环境（ZCode CLI 充值/pull 执行器接入）补验完整 Agent 执行链路；code 面板常驻入口；磁盘空间监控（本轮 99% 满导致两次构建失败，已清理 80G debug 缓存）。
+
 **阶段基线冻结**：Wave 1–4（PR01–14）交付后冻结 Creator Studio 改造的架构基线；Living World Engine（W00–W06）、内容独立化（W07）、开放生态（W08）属下一阶段，不进入本计划。后续修复仅走常规 bug 流程，不再扩 PR 计数。
 
 **Wave 4 边界全套检查（2026-11-28，全部通过）**：MCP 233 / 桌面 592 / UI 141 / SDK 87 / agent-city typecheck / clippy（MCP+桌面）/ `git diff --check`。
