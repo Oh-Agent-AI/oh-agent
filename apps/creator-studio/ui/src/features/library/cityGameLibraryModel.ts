@@ -10,6 +10,8 @@ export type LibraryKind = "city" | "story" | "game";
 
 export type LibraryCityRow = Readonly<CityInstanceRef & {
   name: string;
+  /** PR14 缺陷⑥：宿主 creator.city.list 的布局快照存在性信号；旧宿主缺省 true。 */
+  hasLayout?: boolean;
   worldRevision: string | null;
   capabilities: readonly string[] | null;
   compatibility: string | null;
@@ -67,6 +69,7 @@ export function parseCityListPage(value: unknown): CityListPage {
     const name = text(row.name, 160);
     const cityRevision = revision(row.revision) ?? revision(row.cityRevision);
     if (!cityId || !name || cityRevision === null) throw new Error("creator_city_list_invalid");
+    const hasLayout = row.hasLayout === undefined ? true : row.hasLayout === true;
     let capabilities: readonly string[] | null = null;
     if (row.capabilities !== undefined) {
       if (!Array.isArray(row.capabilities) || row.capabilities.length > 64) throw new Error("creator_city_list_invalid");
@@ -76,7 +79,7 @@ export function parseCityListPage(value: unknown): CityListPage {
         return parsed;
       }));
     }
-    return Object.freeze({ cityId, name, revision: cityRevision, worldRevision: text(row.worldRevision, 128), capabilities,
+    return Object.freeze({ cityId, name, revision: cityRevision, hasLayout, worldRevision: text(row.worldRevision, 128), capabilities,
       compatibility: text(row.compatibilityStatus, 64) ?? text(row.compatibility, 64),
       compatible: typeof row.compatible === "boolean" ? row.compatible : null });
   });

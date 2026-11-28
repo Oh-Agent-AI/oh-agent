@@ -206,7 +206,13 @@ pub(crate) fn list_cities(home: &Path, after: &str, limit: u64) -> Result<Value,
         let doc: Value = serde_json::from_str(raw).map_err(|_| "creator_store_unavailable")?;
         let name = doc.get("name").and_then(Value::as_str).ok_or("creator_store_unavailable")?;
         let biome = doc.pointer("/profile/biome").and_then(Value::as_str).filter(|biome| matches!(*biome, "tropical" | "arid"));
-        cities.push(json!({"cityId":city_id,"revision":revision,"name":name,"biome":biome}));
+        // PR14 缺陷⑥：暴露布局快照存在性（宿主权威信号）。未生成布局的 City 草稿
+        // 不能作为独立 Preview 的世界来源（planning 无数据必然失败），UI 据此过滤。
+        let has_layout: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM creator_city_layouts_v2 WHERE city_id=?1)",
+            params![city_id], |row| row.get::<_, i64>(0)).map(|v| v != 0)
+            .map_err(|_| "creator_store_unavailable")?;
+        cities.push(json!({"cityId":city_id,"revision":revision,"name":name,"biome":biome,"hasLayout":has_layout}));
     }
     let next = if has_more { cities.last().and_then(|city| city["cityId"].as_str()).map(str::to_owned) } else { None };
     Ok(json!({"cities":cities,"nextCursor":next}))

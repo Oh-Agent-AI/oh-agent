@@ -137,7 +137,8 @@ export function CodeGamePreviewPanel(props: Readonly<{
     <label>Preview 世界来源<select aria-label="Preview 世界来源" value={sourceCityId} disabled={busy} onChange={event => setSourceCityId(event.target.value)}>
       <option value="">请显式选择来源</option>
       <option value="synthetic">合成 City Fixture（仅测试）</option>
-      {cities.map(city => <option key={city.cityId} value={city.cityId}>{city.name} · 版本 {city.revision}</option>)}
+      {cities.filter(city => city.hasLayout !== false)
+        .map(city => <option key={city.cityId} value={city.cityId}>{city.name} · 版本 {city.revision}{city.hasLayout === false ? "（未生成布局）" : ""}</option>)}
     </select></label>
     {selected && <code>{selected.buildId} · {selected.byteLength ?? 0} bytes</code>}
     <div className="actions">{workspaceId && <button disabled={busy || building} onClick={() => void buildBaseline()}>{building ? "构建中…" : "构建工作区"}</button>}<button className="secondary" disabled={busy} onClick={() => { void loadBuilds(); void loadCities(); }}>刷新构建与来源</button>
