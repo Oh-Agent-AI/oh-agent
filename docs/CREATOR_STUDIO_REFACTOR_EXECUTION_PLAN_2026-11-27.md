@@ -277,6 +277,10 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 - 代码交付完成：PR01–14 全部提交；E2E 的自动化子集（模板允许清单→workspace 创建→候选 fork/编辑→build/test verdict 链→remix 幂等）在 PR02/09/10/12 的 Rust 测试中覆盖。
 - **真实 Desktop 验收（未完成，需用户执行）**：Tower Defense 十步纵向闭环（规范 §11）需在桌面构建上人工执行：模板创建→Agent 修改→构建/测试/修复→预览/自动试玩→确认/发布→安装运行；附 §11.1 非功能基准首测。UI 创建/Remix 按钮的端到端行为（真实 webview 交互）属此列。
 
+**Tower Defense 端到端自动化实证（`b141a447`）**：`tower_defense_template_runs_the_real_build_and_test_chain`——注册模板创建 → 真实 node 构建（tsc/esbuild 编译 TD 源码）密封 buildId → 真实无头 120 ticks 落 verdict 记录；诚实 verdict（executionOk=true / verdict=inconclusive 无场景，发布门仍要求 passed）。十步中 Agent 修改、视觉试玩、确认、发布、安装、运行仍属真机验收。
+
+**真机验收执行清单（Tower Defense 十步，桌面构建上执行，每步记录：实际操作、宿主/MCP 返回、截图或日志路径、偏差）：** ① 识别 TD 为可试玩样例/可编辑模板（ProjectsPage Code Game 卡片）；② "以此创建"按钮 → 独立工作区（记录 workspaceId）；③ 绑定真实 City（PR13 propose→确认→mount.bind）；④ Studio Agent 请求修改炮塔/敌人/规则（code-game scope 任务）；⑤ 构建 + 候选/Preview（Preview ID 隔离）；⑥ 冻结 City Snapshot 确定性测试 + 自动试玩（截图绑定 Candidate）；⑦ 失败时预算内修复轮（≤3）；⑧ 用户查看 Changes/人工试玩/确认发布（PR07 门禁裁决）；⑨ 拒绝不污染基线、中断可恢复；⑩ 安装不覆盖 City 内容、Revision 更新触发绑定迁移检查。
+
 **阶段基线冻结**：Wave 1–4（PR01–14）交付后冻结 Creator Studio 改造的架构基线；Living World Engine（W00–W06）、内容独立化（W07）、开放生态（W08）属下一阶段，不进入本计划。后续修复仅走常规 bug 流程，不再扩 PR 计数。
 
 **Wave 4 边界全套检查（2026-11-28，全部通过）**：MCP 233 / 桌面 592 / UI 141 / SDK 87 / agent-city typecheck / clippy（MCP+桌面）/ `git diff --check`。
