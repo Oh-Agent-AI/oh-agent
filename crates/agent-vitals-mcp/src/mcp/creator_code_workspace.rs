@@ -2099,7 +2099,7 @@ mod tests {
     #[test]
     fn runner_kills_an_endless_script_within_its_budget() {
         let repo = dev_repo_root();
-        let script = write_runner_script("endless", "const start = Date.now(); while (Date.now() - start < 60_000) {}\n");
+        let script = write_runner_script("endless", "const start = Date.now(); while (Date.now() - start < 60_000) {}");
         let started = Instant::now();
         let output = run_node_with_limits(&repo, script.to_str().unwrap(), &[], &runner_limits(2, 64 * 1024)).unwrap();
         let elapsed = started.elapsed();
@@ -2487,6 +2487,32 @@ mod tests {
         std::fs::write(&wrong_identity, br#"{"buildId":"c"}"#).unwrap();
         let mismatch = run("creator_code_test_record", &json!({"buildId": mismatch_id}), &home, false).unwrap_err();
         assert_eq!(mismatch.code, "data_unavailable");
+        std::fs::remove_dir_all(home).ok();
+    }
+    /// PR14 收官实证（Tower Defense 十步的自动化子集）：真实注册模板 → 真实 node
+    /// 构建（tsc/esbuild 编译 TD 源码）→ 真实无头运行全链。TD 是 PR12 注册的第二个
+    /// code 模板，本测试证明它作为创建源的可用性；无场景时 verdict 是诚实的
+    /// inconclusive（执行 ok ≠ 测试通过），发布门仍要求 scenario verdict passed。
+    /// 真机验收（Agent 修改/预览/发布/安装/运行）仍需桌面构建执行。
+    #[test]
+    fn tower_defense_template_runs_the_real_build_and_test_chain() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let home = std::env::temp_dir().join(format!("code-game-td-e2e-{}-{}", now_ms(), std::process::id()));
+        let created = project_create(&json!({"title": "Tower Defense", "template": "tower-defense", "operationId": "op-td-e2e-1"}), &home).unwrap();
+        assert_eq!(created["data"]["template"], "tower-defense");
+        // gameId 由 manifest slug 派生（community.<slug>-<hex8>），断言前缀而非精确值。
+        assert!(created["data"]["gameId"].as_str().unwrap_or_default().starts_with("community.tower-defense"), "{}", created);
+        let workspace_id = created["data"]["workspaceId"].as_str().unwrap().to_owned();
+        let built = build(&json!({"workspaceId": workspace_id}), &home).unwrap();
+        assert_eq!(built["data"]["status"], "succeeded", "{}", built);
+        let build_id = built["data"]["buildId"].as_str().unwrap().to_owned();
+        let tested = code_test(&json!({"workspaceId": workspace_id, "buildId": build_id, "seed": 7, "ticks": 120}), &home).unwrap();
+        assert_eq!(tested["data"]["source"]["source"], "synthetic");
+        assert_eq!(tested["data"]["executionOk"], json!(true));
+        assert_eq!(tested["data"]["verdict"], "inconclusive");
+        let record: Value = serde_json::from_slice(&std::fs::read(home.join("state/creator/code-games/tests").join(format!("{build_id}.json"))).unwrap()).unwrap();
+        assert_eq!(record["ok"], json!(true));
+        assert_eq!(record["verdict"], json!("inconclusive"));
         std::fs::remove_dir_all(home).ok();
     }
 }
