@@ -125,3 +125,43 @@ fn acceptance_candidate_chain_round1() {
     // 停在 awaiting-review：接受（CAS commit 回基线）或拒绝是用户决策（十步⑧）。
     println!("candidate {candidate_id} awaiting-review; build {build_id}; verdict passed");
 }
+
+/// 步骤⑧（用户决策"接受"）：CAS commit 回基线 + 幂等重放 + 基线前进核验。
+#[test]
+fn acceptance_commit_round1_user_accepted() {
+    let Some(home) = acceptance_home() else { eprintln!("skip"); return; };
+    let workspace_id = std::env::var("AGENT_VITALS_ACCEPTANCE_WORKSPACE").unwrap();
+    let evidence_dir = std::path::PathBuf::from(std::env::var("AGENT_VITALS_ACCEPTANCE_EVIDENCE").unwrap_or_else(|_| "/tmp".into()));
+    std::fs::create_dir_all(&evidence_dir).unwrap();
+
+    // 候选记录（awaiting-review + lastBuildId 由 round1 落盘）。
+    let record: Value = serde_json::from_str(&std::fs::read_to_string(home.join(
+        "state/creator/code-games/candidates/candidate-1d4890ef1761f972/candidate.json")).unwrap()).unwrap();
+    assert_eq!(record["status"], "awaiting-review");
+    let base = record["baseRevision"].as_str().unwrap().to_owned();
+
+    // CAS commit：基线摘要必须仍是 fork 时的摘要。
+    let committed = dispatch("creator_code_candidate_commit",
+        &json!({"candidateId": record["candidateId"], "expectedBaseRevision": base})).unwrap();
+    assert_eq!(committed["status"], "accepted", "{committed}");
+    println!("committed: {}", committed);
+    std::fs::write(evidence_dir.join("commit-round1.json"),
+        serde_json::to_vec_pretty(&json!({"candidateId": record["candidateId"], "commit": committed})).unwrap()).unwrap();
+
+    // 基线前进到候选内容（全树摘要 == 候选 revision）。
+    let info = dispatch("creator_code_workspace_info", &json!({"workspaceId": workspace_id})).unwrap();
+    assert_eq!(info["gameRevision"].as_str().unwrap(), committed["committedRevision"].as_str().unwrap(),
+        "baseline tree must now be the committed candidate content");
+
+    // 幂等重放：同参再 commit 返回同结果、不再换树（PR09 回执语义）。
+    let replay = dispatch("creator_code_candidate_commit",
+        &json!({"candidateId": record["candidateId"], "expectedBaseRevision": base})).unwrap();
+    assert_eq!(replay, committed, "replay must return the original commit result");
+
+    // 基线的源码确实包含修改（HUD v2 + 敌速 0.8）。
+    let source = dispatch("creator_code_file_read",
+        &json!({"workspaceId": workspace_id, "relativePath": "src/index.ts"})).unwrap();
+    let text = source["content"].as_str().unwrap();
+    assert!(text.contains("Tower Defense v2") && text.contains("ENEMY_SPEED * 0.8 * dt"));
+    println!("baseline now carries the v2 modifications; commit verified idempotent");
+}
