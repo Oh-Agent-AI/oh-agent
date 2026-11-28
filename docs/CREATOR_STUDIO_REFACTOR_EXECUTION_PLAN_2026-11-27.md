@@ -311,6 +311,8 @@ Tool spec 变更必须通过 `crates/agent-vitals-mcp/src/mcp/mod.rs` 的注册�
 
 **验收证据**：`artifacts/acceptance-2026-11-28/`（候选链/commit JSON）；驱动测试 `crates/agent-vitals-mcp/tests/acceptance_candidate_chain.rs`（环境变量门控，幂等）。
 
+**缺陷⑥（真机验收追加，`7bb2d1f1`）**：独立 Preview 的世界来源下拉列出了从未生成布局的 City 草稿（`creator_city_layouts_v2` 空），选中必然 `layout_preparation_failed`。修复：宿主 `creator.city.list` 携带每城 `hasLayout` 权威信号（布局快照表 EXISTS），UI 来源下拉过滤无布局 City（旧宿主缺省 true 兼容）。失败本身是诚实失败（无布局数据不编造规划）。桌面 lib 592、UI 141。
+
 **遗留（收官后修复）**：缺陷④视图错位的架构级修复（code 工作区视图容器 + 会话作用域列）；执行器环境（ZCode CLI 充值/pull 执行器接入）补验完整 Agent 执行链路；code 面板常驻入口；磁盘空间监控（本轮 99% 满导致两次构建失败，已清理 80G debug 缓存）。
 
 **阶段基线冻结**：Wave 1–4（PR01–14）交付后冻结 Creator Studio 改造的架构基线；Living World Engine（W00–W06）、内容独立化（W07）、开放生态（W08）属下一阶段，不进入本计划。后续修复仅走常规 bug 流程，不再扩 PR 计数。
